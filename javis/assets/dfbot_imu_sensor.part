@@ -1,0 +1,14 @@
+{
+    "configuration": "default",
+    "documentId": "4ef733f0ecae77d7a12de71e",
+    "documentMicroversion": "4606e4297669064dfc6814e7",
+    "documentVersion": "03b54997a7544e2da702fd99",
+    "elementId": "b038f1024afa568e2ff33289",
+    "fullConfiguration": "default",
+    "id": "Mt/hjbeoSyW+2r+jc",
+    "isStandardContent": false,
+    "name": "dfbot_imu_sensor <1>",
+    "partId": "JHD",
+    "suppressed": false,
+    "type": "Part"
+}
