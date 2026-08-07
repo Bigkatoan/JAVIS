@@ -6,18 +6,12 @@ still build into a valid, standing simulation).
 Run after changing javis/robot.urdf or javis/robot_constants.py:
     venv/bin/python scripts/view_robot.py
 """
-import sys
-from pathlib import Path
-
 import mujoco.viewer
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "javis"))
+from javis.robot_constants import get_javis_robot_cfg
 
-from robot_constants import get_javis_robot_cfg  # noqa: E402
-
-from mjlab.scene import Scene, SceneCfg  # noqa: E402
-from mjlab.terrains import TerrainEntityCfg  # noqa: E402
+from mjlab.scene import Scene, SceneCfg
+from mjlab.terrains import TerrainEntityCfg
 
 
 def main() -> None:

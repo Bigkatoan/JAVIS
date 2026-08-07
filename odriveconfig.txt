@@ -1,0 +1,207 @@
+# sample, not real robot
+#
+# ============================================================================
+# GHI CHÚ TỔNG QUAN (đọc trước khi điền số thật)
+# ============================================================================
+# Đây là API ODrive firmware v0.5.x (odrivetool cổ điển, dùng odrv0.axis0/axis1
+# -- KHÔNG phải API mới của ODrive S1/Pro dùng odrv0.axis0.controller...
+# với cấu trúc khác). Nếu board MKS ODrive Mini thật chạy firmware khác dòng
+# này thì tên field có thể khác, cần đối chiếu lại doc firmware thật.
+#
+# ✅ ĐÃ GIẢI QUYẾT (2026-08-06): chế độ điều khiển chốt là VELOCITY_CONTROL
+# (xem `control_mode` trong khối "Cấu hình bộ điều khiển" bên dưới) -- khớp
+# đúng với giả định trong sim (`WHEEL_ACTUATOR_CFG`, action space của
+# `javis/velocity_task.py`), không cần đổi code sim.
+#
+# Cũng lưu ý: toàn bộ file chỉ cấu hình axis0 (1 động cơ). axis1 (động cơ
+# bánh còn lại) chỉ có đúng 1 dòng set can_node_id ở cuối, CHƯA có motor/
+# encoder/controller config nào -- cần nhân đôi toàn bộ khối bên dưới cho
+# axis1 (đổi giá trị riêng nếu 2 bên không giống hệt nhau).
+#
+# ĐÃ XÁC NHẬN với bạn (2026-08-06):
+# - Motor thật: hub motor 36V/350W, dẫn động TRỰC TIẾP (direct-drive, gear
+#   ratio 1:1) -- vậy gearbox.stl + spur_gear__20_teeth/30_teeth trong CAD
+#   KHÔNG phải bộ truyền động chính tới bánh -- vẫn chưa rõ 2 part đó dùng
+#   để làm gì, xem SIM2REAL.md mục 2.
+# - Encoder: đúng là SPI tuyệt đối rời (như dòng 89 bên dưới), không phải
+#   Hall tích hợp trong hub motor.
+# - Datasheet motor này (36V 350W, 8 inch, dòng liên tục <=16A) tự mâu
+#   thuẫn giữa các trường (mô-men ghi 2 khoảng lệch ~100 lần, "800 RPM" ghi
+#   trên datasheet không khớp RPM bánh suy từ chính tốc độ tối đa "15-18
+#   km/h" của cùng datasheet đó) -- xem phép tính đối chiếu + số dùng tạm
+#   trong javis/robot_constants.py (WHEEL_ACTUATOR_CFG). effort_limit/
+#   damping ở đó đã cập nhật theo motor thật này, vẫn là ước lượng, chưa
+#   phải số đo.
+# ============================================================================
+
+odrv0.erase_configuration()  # xoá hết config cũ trên board, bắt đầu lại từ đầu -- cẩn thận nếu board đã calibrate rồi
+
+# --- Cấu hình chung của board (áp dụng cho cả 2 axis) ---
+odrv0.config.brake_resistance = 2.0
+# Ohm. Điện trở xả (brake resistor) gắn ngoài, dùng để tiêu hao năng lượng
+# khi động cơ phanh/giảm tốc (regen) mà không có gì hấp thụ (VD không có pin
+# sạc ngược được). PHẢI khớp với điện trở thật đang gắn trên mạch -- nếu để
+# sai giá trị hoặc không gắn trở mà vẫn để giá trị này, có thể gây quá áp.
+# Robot thật có gắn brake resistor không? Nếu không gắn, xem lại
+# max_regen_current bên dưới thay vì để 0 mặc định.
+odrv0.config.dc_bus_undervoltage_trip_level = 18.0
+# Volt. Ngưỡng điện áp thấp -> ODrive tự ngắt (bảo vệ khi pin yếu/tụt áp).
+# Cần đặt thấp hơn điện áp pin khi cạn (VD pin Li-ion 3S cạn ~9V thì để
+# ngưỡng dưới mức đó một chút, không phải theo số mẫu 8.0V này).
+odrv0.config.dc_bus_overvoltage_trip_level = 25.2
+# Volt. Ngưỡng điện áp cao -> tự ngắt (bảo vệ quá áp, VD khi phanh động cơ
+# nạp ngược vào bus mà không xả kịp). Đặt theo điện áp pin thật + biên an
+# toàn (56V ở đây gợi ý pin khá cao áp -- kiểm tra lại pin robot thật dùng
+# bao nhiêu cell/volt, nếu pin nhỏ hơn thì số này đang để sai).
+odrv0.config.dc_max_positive_current = 16.0
+# Amp. Dòng tối đa ODrive được RÚT từ nguồn (khi động cơ tăng tốc/chịu tải).
+odrv0.config.dc_max_negative_current = -3.0
+# Amp (âm). Dòng tối đa được PHÉP BƠM NGƯỢC vào nguồn (khi phanh/regen).
+# Nếu pin không chịu được sạc ngược, để gần 0; nếu có brake resistor xả bớt
+# thì có thể nới hơn.
+odrv0.config.max_regen_current = 0
+# Amp. Dòng regen tối đa cho phép chạy qua brake resistor. Để 0 = tắt hẳn
+# tính năng regen (dòng phanh sẽ đi đâu? cần hiểu rõ mạch thật trước khi để
+# 0, kẻo phanh gấp gây quá áp).
+odrv0.save_configuration()
+
+# --- Cấu hình động cơ (axis0 = 1 trong 2 bánh) ---
+odrv0.axis0.motor.config.pole_pairs = 15
+# Số cặp cực của động cơ = số nam châm rotor / 2. ĐÃ XÁC NHẬN 2026-08-06:
+# đếm thật trong hub motor ra 30 nam châm -> pole_pairs = 30/2 = 15. Stator
+# có 27 răng (27 khe dây quấn) -- không phải số đưa vào pole_pairs, nhưng
+# tổ hợp 30 cực/27 răng là cấu hình rất phổ biến ở hub motor hoverboard
+# (fractional slot concentrated winding, tỉ lệ 10:9), khớp với loại motor
+# đã xác định ở datasheet 36V/350W trước đó.
+odrv0.axis0.motor.config.calibration_current = 5
+# Amp. Dòng dùng khi hiệu chuẩn động cơ (đo điện trở/điện cảm cuộn dây) --
+# thường để nhỏ hơn current_lim, không phải dòng vận hành bình thường.
+odrv0.axis0.motor.config.resistance_calib_max_voltage = 24
+# Volt. Điện áp tối đa dùng khi đo điện trở cuộn dây lúc hiệu chuẩn.
+odrv0.axis0.motor.config.motor_type = MOTOR_TYPE_HIGH_CURRENT
+# Loại động cơ: HIGH_CURRENT dùng cho hầu hết BLDC/PMSM thường (bánh xe
+# dùng loại này là hợp lý), GIMBAL dùng cho động cơ dòng thấp/không có
+# current sense tốt. Cần xác nhận motor thật là loại BLDC "high current"
+# đúng nghĩa, không phải gimbal motor.
+odrv0.axis0.motor.config.current_lim = 15
+# Amp. Giới hạn dòng vận hành bình thường -- LẤY TỪ DATASHEET ĐỘNG CƠ (dòng
+# liên tục tối đa) và khả năng chịu dòng của board MKS ODrive Mini, lấy số
+# NHỎ HƠN trong 2 giới hạn đó. Đây chính là effort_limit thật của động cơ
+# (trước hộp số) -- liên quan trực tiếp tới effort_limit trong
+# WHEEL_ACTUATOR_CFG (javis/robot_constants.py) sau khi nhân với tỉ số
+# truyền, xem SIM2REAL.md mục 3.
+odrv0.axis0.motor.config.requested_current_range = 20
+# Amp. Dải đo dòng của cảm biến (thường >= current_lim một chút).
+odrv0.save_configuration()
+
+# --- Cấu hình encoder (axis0) ---
+odrv0.axis0.encoder.config.mode = ENCODER_MODE_SPI_ABS_AMS
+# Loại encoder: encoder TUYỆT ĐỐI (absolute) qua SPI, chip họ AMS (VD
+# AS5047P/AS5048A) -- ĐÃ XÁC NHẬN đúng với phần cứng thật (encoder SPI
+# tuyệt đối gắn ngay trên mạch ODrive, không phải Hall sensor tích hợp
+# trong hub motor). Chỉ còn cần điền đúng cpr (số bit thật của chip) và
+# abs_spi_cs_gpio_pin (chân đấu dây thật) bên dưới.
+odrv0.axis0.encoder.config.abs_spi_cs_gpio_pin = 7
+# Chân GPIO nào trên board ODrive nối tới chân CS (chip-select) của encoder
+# -- phải khớp với sơ đồ đấu dây thật.
+odrv0.axis0.encoder.config.cpr = 16384
+# Counts Per Revolution -- độ phân giải encoder (2^14 = 16384, khớp với
+# nhiều chip AMS 14-bit). Phải khớp đúng số bit thật của chip encoder đang
+# dùng, sai số này thì mọi phép đo vị trí/vận tốc từ encoder đều sai tỉ lệ.
+#
+# Lưu ý: encoder này không nằm trực tiếp trên trục bánh xe -- gearbox.stl/
+# spur_gear__20_teeth/__30_teeth là bộ bánh răng 2 tầng (30:20 rồi 20:30)
+# dời nam châm encoder từ trục bánh xe lên gần chip cảm biến trên board MKS
+# ODrive Mini, KHÔNG phải bộ truyền lực. Đã xác nhận 2 tầng triệt tiêu nhau
+# (30/20 x 20/30 = 1), nên encoder vẫn đo ĐÚNG 1:1 với bánh xe -- mọi số
+# ODrive báo/nhận (turns, vel_limit, input_pos, encoder feedback...) dùng
+# thẳng được, không cần quy đổi gì.
+odrv0.axis0.encoder.config.bandwidth = 3000
+# Hz. Băng thông bộ lọc tín hiệu encoder -- ảnh hưởng độ trễ/độ mượt phản
+# hồi vị trí, thường để mặc định theo khuyến nghị ODrive trừ khi có lý do
+# chỉnh riêng.
+odrv0.axis0.encoder.config.calib_range = 10
+odrv0.save_configuration()
+
+# --- Cấu hình bộ điều khiển (axis0) ---
+odrv0.axis0.controller.config.control_mode = CONTROL_MODE_VELOCITY_CONTROL
+# ✅ Đổi sang điều khiển VẬN TỐC 2026-08-06 -- khớp với giả định trong sim
+# (`javis/robot_constants.py` WHEEL_ACTUATOR_CFG dùng BuiltinVelocityActuatorCfg,
+# `javis/velocity_task.py` action space dùng JointVelocityActionCfg). Mâu
+# thuẫn nêu ở đầu file ĐÃ GIẢI QUYẾT, không cần đổi code sim nữa.
+odrv0.axis0.controller.config.vel_limit = 120
+# Vòng/giây (turns/s) -- giới hạn vận tốc an toàn của vòng điều khiển vận
+# tốc (ODrive sẽ tự giới hạn lệnh input_vel không vượt số này). Số 120
+# turns/s ở đây là số mẫu, chưa phải số thật -- đối chiếu với vận tốc tối
+# đa thực tế mong muốn của bánh xe (tham khảo ước lượng ~45 rad/s ≈ 7.2
+# turns/s trong `WHEEL_ACTUATOR_CFG`, nhưng số đó cũng chỉ là suy đoán từ
+# datasheet mâu thuẫn -- xem SIM2REAL.md mục 3) rồi đặt lại cho hợp lý.
+odrv0.axis0.controller.config.vel_gain = 0.02
+# Gain P của vòng vận tốc (đơn vị: A / (turns/s)) -- đây là gain CHÍNH khi
+# chạy velocity mode (không như position mode còn có thêm pos_gain bên
+# ngoài). Cần tinh chỉnh thực nghiệm trên robot thật, phụ thuộc quán tính
+# tải thật (bánh xe + khung xe qua trục), KHÔNG thể suy ra chỉ từ datasheet.
+odrv0.axis0.controller.config.vel_integrator_gain = 0.2
+# Gain I của vòng vận tốc -- khử sai số xác lập (steady-state), cũng cần
+# tune thực nghiệm.
+odrv0.axis0.controller.config.input_mode = INPUT_MODE_PASSTHROUGH
+# Cách nội suy giữa các lệnh input_vel: PASSTHROUGH = áp dụng lệnh vận tốc
+# mới ngay lập tức, không làm mượt gì thêm -- phù hợp khi bộ điều khiển bên
+# ngoài (policy RL trên Jetson, gửi lệnh liên tục qua CAN mỗi bước điều
+# khiển) đã tự quyết định tốc độ thay đổi, khớp đúng với cách
+# BuiltinVelocityActuatorCfg trong sim hoạt động (không có ramp riêng).
+# Nếu thấy chuyển động giật, có thể đổi sang INPUT_MODE_VEL_RAMP (làm mượt
+# bằng vel_ramp_rate) đánh đổi lấy độ trễ.
+#
+# (pos_gain, trap_traj.config.* của bản mẫu trước đây đã bỏ -- chỉ dùng cho
+# CONTROL_MODE_POSITION_CONTROL + INPUT_MODE_TRAP_TRAJ, không áp dụng cho
+# velocity mode.)
+odrv0.save_configuration()
+odrv0.reboot()
+
+# --- Trình tự hiệu chuẩn + khởi động vòng kín (axis0) ---
+odrv0.axis0.requested_state = AXIS_STATE_MOTOR_CALIBRATION
+# Chạy hiệu chuẩn động cơ (đo điện trở/điện cảm cuộn dây) -- chỉ cần chạy 1
+# lần cho mỗi động cơ (trừ khi thay động cơ/dây).
+odrv0.axis0.motor.config.pre_calibrated = True
+# Đánh dấu "đã hiệu chuẩn rồi" để lần khởi động sau KHÔNG cần chạy lại bước
+# trên -- chỉ set True SAU KHI đã chạy calibration thành công ít nhất 1 lần.
+odrv0.axis0.requested_state = AXIS_STATE_ENCODER_OFFSET_CALIBRATION
+# Hiệu chuẩn offset giữa encoder và vị trí điện của động cơ -- bắt buộc mỗi
+# khi lắp lại encoder/động cơ (offset có thể đổi nếu tháo lắp lại trục).
+odrv0.axis0.config.startup_encoder_offset_calibration = True
+# Tự động chạy lại bước hiệu chuẩn offset MỖI LẦN khởi động board (khác với
+# pre_calibrated ở trên là bỏ qua) -- hữu ích nếu encoder không phải loại
+# tuyệt đối ổn định giữa các lần tắt/mở nguồn.
+odrv0.axis0.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
+# Chuyển sang chế độ điều khiển vòng kín (motor thực sự bắt đầu giữ vị
+# trí/vận tốc theo lệnh) -- đây là trạng thái vận hành bình thường.
+odrv0.axis0.config.startup_closed_loop_control = True
+# Tự động vào thẳng chế độ vòng kín ngay khi board khởi động (không cần
+# lệnh tay) -- cân nhắc kỹ vì nếu robot đang ở tư thế/vị trí không mong
+# muốn lúc cấp nguồn, động cơ sẽ lập tức cố "giữ" vị trí sai đó.
+odrv0.save_configuration()
+odrv0.reboot()
+
+# --- Test nhanh sau hiệu chuẩn (không phải config, chỉ là lệnh thử tay) ---
+odrv0.axis0.controller.input_vel = 2
+odrv0.axis0.controller.input_vel = 0
+# Đổi sang input_vel cho khớp velocity mode (bản mẫu cũ dùng input_pos, chỉ
+# đúng với position mode). Ra lệnh quay 2 turns/s rồi dừng, để kiểm tra
+# động cơ quay đúng chiều/đáp ứng tốt sau hiệu chuẩn -- chỉnh số 2 tuỳ ý
+# muốn quay nhanh/chậm khi test, chỉ dùng khi test tay qua odrivetool,
+# không phải một phần config cố định.
+odrv0.axis0.requested_state = AXIS_STATE_IDLE
+# Về trạng thái nghỉ (ngắt điều khiển vòng kín, động cơ tự do quay tay).
+
+# --- CAN bus (giao tiếp với Jetson/máy tính điều khiển chính) ---
+odrv0.axis0.config.can_node_id = 0
+odrv0.can.set_baud_rate(500000)
+# 500 kbit/s -- tốc độ CAN bus. Phải khớp với baud rate cấu hình phía
+# Jetson/bo mạch CAN transceiver, nếu không 2 bên sẽ không giao tiếp được.
+odrv0.axis1.config.can_node_id = 63
+# ⚠️ axis1 (động cơ bánh còn lại) mới chỉ có ĐÚNG 1 dòng này -- toàn bộ
+# motor/encoder/controller config phía trên (dòng 12 trở xuống trong bản
+# gốc) cần lặp lại cho axis1 với giá trị đo/tune riêng cho động cơ đó. Số
+# node_id=63 cũng chỉ là placeholder, cần đặt số thật không trùng với
+# axis0 hay thiết bị CAN nào khác trên bus.

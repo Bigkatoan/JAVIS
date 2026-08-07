@@ -1,0 +1,16 @@
+[project]
+name = "javis"
+version = "0.1.0"
+description = "JAVIS rover: Onshape CAD -> URDF -> mjlab simulation"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."mjlab.tasks"]
+javis = "javis.tasks"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["javis*"]
