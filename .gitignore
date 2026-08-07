@@ -22,6 +22,9 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
+
+# mjlab training runs (checkpoints, tensorboard logs)
+/logs/
 .installed.cfg
 *.egg
 MANIFEST

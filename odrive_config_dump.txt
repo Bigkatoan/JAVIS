@@ -1,0 +1,74 @@
+# odrive_config_dump.txt -- snapshot cấu hình thật đọc trực tiếp qua USB
+# Lấy lúc: 2026-08-06T21:58:40.020171
+# Định dạng giống odriveconfig.txt (lệnh odrivetool + chú thích), nhưng đây
+# là SỐ THẬT đọc từ 2 board đang chạy, không phải mẫu điền tay.
+# Bối cảnh: đang debug vì sao board phải không phát được heartbeat trên CAN
+# bus (ESP32-S3 độc lập xác nhận không nghe được gì từ node phải), dù USB
+# cho thấy config hoàn toàn đúng. Xem MKS_XDRIVE_MINI.md và SIM2REAL.md
+# mục 3 / 5b để biết toàn bộ lịch sử debug.
+#=============================================================================
+
+
+# ===========================================================================
+# LEFT / bánh trái -- USB serial 318236823335
+# node_id=1, ĐÃ xác nhận phát heartbeat CAN bình thường (test qua ESP32-S3)
+# ===========================================================================
+odrv_trai = <không tìm thấy qua USB lúc lấy dump này>
+
+
+# ===========================================================================
+# RIGHT / bánh phải -- USB serial 3676365D3335
+# node_id=2 (tạm đổi từ 0 để test cô lập), KHÔNG thấy phát heartbeat CAN dù config đúng -- xem MKS_XDRIVE_MINI.md + SIM2REAL.md sec 5b
+# ===========================================================================
+
+# --- Cấu hình chung board ---
+odrv_phai.config.brake_resistance = 2.0
+odrv_phai.config.dc_bus_undervoltage_trip_level = 19.0
+odrv_phai.config.dc_bus_overvoltage_trip_level = 28.0
+odrv_phai.config.dc_max_positive_current = 20.0
+odrv_phai.config.dc_max_negative_current = -1.0
+odrv_phai.config.max_regen_current = 0.0
+odrv_phai.config.enable_uart = True
+odrv_phai.vbus_voltage = 23.236963272094727  # điện áp pin đo thật lúc lấy dump
+
+# --- CAN bus ---
+odrv_phai.can.config.baud_rate = 500000
+odrv_phai.can.config.protocol = 0
+odrv_phai.can.error = 0  # firmware tự báo lỗi CAN (0 = không lỗi, nhưng field này không tách lỗi TX/ACK)
+odrv_phai.axis0.config.can_node_id = 2
+odrv_phai.axis0.config.can_heartbeat_rate_ms = 100  # chu kỳ tự phát heartbeat
+odrv_phai.axis1.config.can_node_id = 63  # ghost axis, luôn = 63
+
+# --- Cấu hình động cơ (axis0) ---
+odrv_phai.axis0.motor.config.pole_pairs = 15
+odrv_phai.axis0.motor.config.motor_type = 0  # 0 = MOTOR_TYPE_HIGH_CURRENT
+odrv_phai.axis0.motor.config.current_lim = 15.0
+odrv_phai.axis0.motor.config.torque_constant = 0.2070000022649765
+odrv_phai.axis0.motor.config.phase_resistance = 0.2464160919189453  # đo được lúc calibrate
+odrv_phai.axis0.motor.config.phase_inductance = 0.0005382831441238523  # đo được lúc calibrate
+odrv_phai.axis0.motor.config.pre_calibrated = True
+
+# --- Cấu hình encoder (axis0) ---
+odrv_phai.axis0.encoder.config.mode = 257  # 257 = ENCODER_MODE_SPI_ABS_AMS
+odrv_phai.axis0.encoder.config.abs_spi_cs_gpio_pin = 7
+odrv_phai.axis0.encoder.config.cpr = 16384
+odrv_phai.axis0.encoder.config.offset = 5404  # offset đo được lúc calibrate
+odrv_phai.axis0.encoder.config.bandwidth = 3000.0
+
+# --- Cấu hình bộ điều khiển (axis0) ---
+odrv_phai.axis0.controller.config.control_mode = 2  # 2 = CONTROL_MODE_VELOCITY_CONTROL
+odrv_phai.axis0.controller.config.vel_limit = 15.0
+odrv_phai.axis0.controller.config.vel_gain = 0.30000001192092896
+odrv_phai.axis0.controller.config.vel_integrator_gain = 0.20000000298023224
+odrv_phai.axis0.controller.config.input_mode = 1  # 1 = INPUT_MODE_PASSTHROUGH
+
+# --- Trạng thái lỗi/live lúc lấy dump (KHÔNG phải config, chỉ snapshot) ---
+odrv_phai.axis0.error = 0
+odrv_phai.axis0.motor.error = 0
+odrv_phai.axis0.encoder.error = 0
+odrv_phai.axis0.controller.error = 0
+odrv_phai.axis0.current_state = 1  # 1 = AXIS_STATE_IDLE
+odrv_phai.axis0.motor.is_calibrated = True
+
+
+# EOF
