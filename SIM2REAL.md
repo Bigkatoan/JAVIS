@@ -126,21 +126,53 @@ nào — RL hay LQR hay MPC — làm việc được qua một vòng vận tốc
 không cứu được: `vel_integrator_gain = 0.15` cần ~4 s để tích đủ momen giữ một
 góc nghiêng 5°.
 
-- [ ] **Tăng `vel_gain` lên ~15× giá trị hiện tại.** Mục tiêu vòng vận tốc
-      ~20 ms → kp = J/τ = 0.61 N·m/(rad/s) → **`vel_gain ≈ 3.8`**. Kèm theo
-      `vel_integrator_gain ≈ 19` (theo quy tắc ODrive:
-      `0.5 × bandwidth × vel_gain`, bandwidth 10 Hz).
-      Giá trị đo được sau khi tune: vel_gain ______, vel_integrator_gain ______
-      ⚠️ Tăng gain 15× trên robot thật thì **kê chân đế/treo bánh lên trước**,
-      và giảm `current_lim` tạm thời — gain cao + encoder noise = rung mạnh.
+**Giá trị đích đã chốt trong sim** (`javis/sim_config.py`, `DrivetrainCfg` —
+viết thẳng bằng **đơn vị gốc của ODrive**, gõ vào board là xong, không phải quy
+đổi gì):
+
+```
+axis0.controller.config.vel_gain            = 15.0    # hiện tại 0.25  (60×)
+axis0.controller.config.vel_integrator_gain = 75.0    # hiện tại 0.15  (500×)
+```
+
+Chọn bằng `scripts/tune_sim_gains.py`, quét gain trên cả bánh có tải lẫn bánh
+không tải và chấm điểm **đúng công thức `scripts/tune_wheel_pid.py` đang dùng
+trên phần cứng thật**. Kết quả: vòng vận tốc còn **5.1 ms** khi bánh quay tự do
+và **49.9 ms** khi đang đẩy robot — đều nằm gọn trong 171 ms mà bài toán cân
+bằng cho phép, tức bánh xe trở thành một "nguồn vận tốc" gần lý tưởng, đúng
+như policy đang giả định.
+
+### Cách tune lên dần cho an toàn
+
+Đừng nhảy một phát từ 0.25 lên 15. Với Kt = 0.207 N·m/A, `vel_gain = 15` làm
+dòng chạm `current_lim` 15 A chỉ với sai số vận tốc **1.3 rad/s** — nghĩa là
+sai lệch lớn một chút là ra momen tối đa ngay (đúng cái ta muốn khi cứu thăng
+bằng), nhưng nhiễu encoder cũng bị khuếch đại gấp ~60 lần.
+
+- [ ] **Kê robot lên giá, bánh không chạm đất.** Tạm hạ `current_lim` xuống
+      ~5 A trong lúc dò.
+- [ ] Đi từng nấc, mỗi nấc lệnh một bước vận tốc rồi nghe/nhìn:
+      `0.25 → 1 → 3 → 6 → 10 → 15`. Tạm để `vel_integrator_gain = 5 × vel_gain`
+      (đúng quy tắc ODrive `0.5 × bandwidth × vel_gain` ở bandwidth 10 Hz).
+- [ ] Nấc nào bắt đầu **rung/hú ở trạng thái đứng yên** thì lùi lại 30–50% —
+      đó là trần do nhiễu encoder, không phải do lý thuyết.
+      Giá trị dừng được: vel_gain ______, vel_integrator_gain ______
+- [ ] Trả `current_lim` về 15 A, thử lại có tải.
+- [ ] Nếu trần thật thấp hơn 15 nhiều (VD chỉ tới 6), **báo lại để hạ
+      `DrivetrainCfg.vel_gain` trong sim cho khớp** — sim phải chạy đúng con số
+      phần cứng làm được, không phải ngược lại.
+
 - [ ] **Mở rộng dải quét của `scripts/tune_wheel_pid.py`.** Hiện chỉ quét
-      0.15–0.40, và quét trên bánh **quay tự do** — ở chế độ đó gain thấp cho
-      kết quả đẹp nhất nên bộ quét sẽ luôn chọn sai cho bài toán cân bằng.
-      Cần quét lại 1.0–6.0 với bánh đang chịu tải thật.
-- Sim hiện đã dùng thẳng giá trị *cần tune tới* (`javis/sim_config.py`,
-  `DrivetrainCfg.kp_nm_per_rad_s = 0.61`), và ghi lại giá trị đang cấu hình
-  trong `kp_as_configured` để đối chiếu. DR ±40% quanh đó, vì đây là mục tiêu
-  chứ chưa phải số đo.
+      0.15–0.40, và quét trên bánh **quay tự do** — ở chế độ đó gain thấp luôn
+      cho điểm đẹp nhất, nên bộ quét sẽ luôn chọn sai cho bài toán cân bằng.
+      Cần quét lại khoảng 1–20.
+
+> ⚠️ Lưu ý về sim: vòng PI trong `javis/mdp/actions.py` tính momen **tường minh
+> mỗi bước vật lý**, nên gain và timestep không độc lập nhau (`kp·dt/J < 1`).
+> Vì thế task đã đổi sang **timestep 2.5 ms (400 Hz), decimation 8** để giữ
+> nguyên 50 Hz điều khiển. Board thật chạy vòng này ở 8 kHz nên không vướng giới
+> hạn đó — đây thuần tuý là ràng buộc của mô phỏng. Đổi timestep mà quên đổi
+> gain thì `OdriveVelocityAction` sẽ raise thẳng chứ không âm thầm phân kỳ.
 
 - [x] **Board thật chỉ dùng 1 axis/board** (`axis0`, `axis1` là "ghost" —
       không có động cơ thật). Robot dùng 2 board riêng, mỗi board 1 bánh —

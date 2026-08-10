@@ -19,7 +19,18 @@ low-frequency oscillation under load, which is both the hardest failure mode to
 debug on a balancing robot and the most likely one to break something.
 
 So: `BuiltinMotorActuatorCfg` for a plain torque actuator, and the PI loop runs
-here, at the physics rate, with the real board's gains and ramp rate.
+here, at the physics rate, in ODrive's own units.
+
+The gains are the ones the hardware needs to be tuned *to*, not the ones it has
+-- see `DrivetrainCfg`. The board's configured `vel_gain = 0.25` gives a 307 ms
+velocity loop against a robot whose fall time constant is 171 ms, which no
+balance controller can work through.
+
+One consequence to know about: because this loop is integrated explicitly, how
+stiff a gain the simulation can represent is capped by the physics timestep.
+`__init__` refuses to build outside the well-damped region rather than let a
+mismatched pair degrade training silently. The real board runs its loop at
+8 kHz and has no such limit.
 
 Set `DrivetrainCfg.use_pi_actuator = False` to fall back to mjlab's builtin
 velocity actuator and A/B the difference.
@@ -27,6 +38,7 @@ velocity actuator and A/B the difference.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import torch
@@ -82,6 +94,29 @@ class OdriveVelocityAction(BaseAction):
     self._physics_dt = env.cfg.sim.mujoco.timestep
     dcfg = cfg.drivetrain
 
+    # The loop below is forward Euler, so gain and physics timestep are not
+    # independent choices: it diverges above alpha = 2 and rings between 1 and
+    # 2. The bar here is 0.7, the well-damped region, rather than the bare
+    # stability limit -- a ringing velocity loop does not announce itself, it
+    # just quietly makes the wheel a worse velocity source, and the policy then
+    # trains badly for no visible reason.
+    alpha = dcfg.stability_alpha(self._physics_dt, self._wheel_inertia())
+    if alpha > 0.7:
+      safe_gain = 0.7 * self._wheel_inertia() / self._physics_dt * 2.0 * math.pi
+      raise ValueError(
+        f"velocity-loop gain is too stiff for this physics timestep: "
+        f"kp*dt/J = {alpha:.2f}, needs <= 0.7 to stay well damped "
+        f"(it diverges outright above 2.0).\n"
+        f"  vel_gain = {dcfg.vel_gain} N*m/(turn/s), timestep = "
+        f"{self._physics_dt * 1000:.2f} ms, unloaded wheel inertia = "
+        f"{self._wheel_inertia():.5f} kg*m^2\n"
+        f"Fix by either:\n"
+        f"  - halving SimulationCfg.mujoco.timestep and doubling decimation "
+        f"(keeps the control rate), or\n"
+        f"  - lowering DrivetrainCfg.vel_gain to {safe_gain:.1f} or below.\n"
+        f"scripts/tune_sim_gains.py sweeps this trade-off."
+      )
+
     shape = (self.num_envs, self.action_dim)
     self._integrator = torch.zeros(shape, device=self.device)
     self._ramped_target = torch.zeros(shape, device=self.device)
@@ -105,6 +140,16 @@ class OdriveVelocityAction(BaseAction):
     )
 
   # Internals.
+
+  @staticmethod
+  def _wheel_inertia() -> float:
+    """Spin-axis inertia of one unloaded wheel, from the mass model."""
+    from .. import mass_model
+
+    _, _, _, principal = mass_model.fuse_nominal("wheel")
+    # The wheel body frame is rotated so the spin axis is local z; the spin
+    # moment is the distinct (largest) one, the other two being equal.
+    return float(max(principal))
 
   def _resample_drivetrain(self, env_ids: torch.Tensor) -> None:
     dcfg = self.cfg.drivetrain

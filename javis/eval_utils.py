@@ -9,7 +9,7 @@ keeps that in one place rather than three.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -40,6 +40,8 @@ def make_env_cfg(
   ang_vel_z: float,
   deterministic_load: bool = True,
   episode_length_s: float = 12.0,
+  vel_gain: float | None = None,
+  vel_integrator_gain: float | None = None,
 ):
   """Play-mode env config pinned to one twist command.
 
@@ -52,6 +54,26 @@ def make_env_cfg(
   cfg = cfg_fn(play=True)
   cfg.scene.num_envs = num_envs
   cfg.episode_length_s = episode_length_s
+
+  if vel_gain is not None or vel_integrator_gain is not None:
+    # Answers the question that matters while tuning the board: if the
+    # hardware turns out to top out below the target gain, does the policy
+    # still work there? Replaces the whole DrivetrainCfg because it is frozen.
+    action = cfg.actions["wheel_vel"]
+    current = action.drivetrain
+    action.drivetrain = replace(
+      current,
+      vel_gain=current.vel_gain if vel_gain is None else vel_gain,
+      vel_integrator_gain=(
+        current.vel_integrator_gain
+        if vel_integrator_gain is None
+        else vel_integrator_gain
+      ),
+    )
+    alpha = action.drivetrain.stability_alpha(cfg.sim.mujoco.timestep)
+    print(f"[eval] drivetrain override: vel_gain="
+          f"{action.drivetrain.vel_gain} vel_integrator_gain="
+          f"{action.drivetrain.vel_integrator_gain}  (alpha={alpha:.2f})")
 
   twist = cfg.commands["twist"]
   twist.ranges.lin_vel_x = (lin_vel_x, lin_vel_x)

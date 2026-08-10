@@ -205,9 +205,27 @@ told, which costs nothing at deployment and keeps value estimation sane.
 A curriculum widens the ranges as mean episode length improves, because
 starting at the full envelope produces no learnable episodes at all.
 
+Trained 1500 iterations on an RTX 3090 (~13 min) with the retuned drivetrain
+gains below as a smoke test — curriculum reached 0.96 (vs 0.84 at 800 iterations
+with the board's current, un-retuned gain). Mass alone: 30/30 grid cells at
+100% survival up to 30.9 kg total (2.8x nominal). Centre-of-mass offset is the
+real limit — 13/25 cells, bounded by a roughly constant ~7 degree equilibrium
+lean rather than by the offset distance itself, so a large offset mounted high
+survives where a small one mounted low does not. Not a converged policy; a
+demonstration that the pipeline and the retuned drivetrain both work.
+
+Physics runs at 400 Hz with `decimation=8`, giving the same 50 Hz control rate
+as the baseline task. The finer timestep is not for contact accuracy: the ODrive
+PI loop is integrated explicitly, so how stiff a velocity gain the sim can
+represent is capped by the timestep (`DrivetrainCfg.stability_alpha`). At 200 Hz
+the gain would have to be soft enough that the wheel stops behaving like the
+velocity source the policy assumes. `OdriveVelocityAction` raises if a future
+timestep change breaks that relationship rather than diverging quietly.
+
 Evaluate and export:
 
 ```bash
+.venv/bin/python scripts/tune_sim_gains.py                            # gain sweep
 .venv/bin/python scripts/eval_payload_sweep.py   --checkpoint <ckpt>  # CSV + heatmaps
 .venv/bin/python scripts/record_payload_video.py --checkpoint <ckpt>  # mp4
 .venv/bin/python scripts/export_onnx.py          --checkpoint <ckpt>  # ONNX + I/O contract
@@ -216,16 +234,26 @@ Evaluate and export:
 ## Simulation notes / known gaps
 
 - **The ODrive velocity gains on the hardware cannot balance this robot.**
-  Found in simulation, and it is a hardware conclusion, not a sim artifact.
+  Found in simulation, but it is a hardware conclusion, not a sim artifact.
   `vel_gain = 0.25 N·m/(turn/s)` against a 0.0122 kg·m² wheel is a velocity-loop
-  time constant of 307 ms, while the robot's own fall time constant is
-  `sqrt(h/g)` = 171 ms — the inner loop is slower than the thing it is supposed
-  to stabilize. It needs roughly 15× more gain (`vel_gain ≈ 3.8`, i.e. a ~20 ms
-  loop) before a balance controller of any kind can work. Note
-  `scripts/tune_wheel_pid.py` sweeps only 0.15–0.40, tuned on a free-spinning
-  wheel where soft gains are fine. `javis/sim_config.py` defaults to the
-  retuned values and records the configured ones alongside; `SIM2REAL.md` sec 3
-  tracks the change.
+  time constant of 307 ms — 3 s once it also has to accelerate 11 kg of robot —
+  while the robot's own fall time constant is `sqrt(h/g)` = 171 ms. The inner
+  loop is slower than the thing it is supposed to stabilize, and no balance
+  controller of any kind works through that.
+
+  `javis/sim_config.py` therefore targets `vel_gain = 15.0` and
+  `vel_integrator_gain = 75.0` — **60× and 500×** what is configured — chosen
+  with `scripts/tune_sim_gains.py`, which sweeps candidates against both the
+  loaded and unloaded wheel and scores them the same way
+  `scripts/tune_wheel_pid.py` scores real hardware. That gives a 5.1 ms loop
+  unloaded and 49.9 ms driving.
+
+  Gains are stored in ODrive's own units, so the sim value goes straight onto
+  the board. Do not jump there in one step: at that gain the 15 A limit is
+  reached at 1.3 rad/s of velocity error, so encoder noise is amplified ~60×
+  too. `SIM2REAL.md` sec 3 has a step-by-step ladder to walk it up on a stand.
+  Note `scripts/tune_wheel_pid.py` sweeps only 0.15–0.40, on a free-spinning
+  wheel where soft gains always score best — it cannot find this.
 - **Component masses are known to varying degrees.** Battery and wheels are
   weighed; Jetson and camera are catalog figures; the MKS boards, IMU and
   fastener totals are estimates. Each group's domain-randomization range in
