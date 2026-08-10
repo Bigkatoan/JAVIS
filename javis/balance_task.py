@@ -445,8 +445,15 @@ def _make_env_cfg(rough: bool = False, play: bool = False) -> ManagerBasedRlEnvC
       elevation=-20.0,
       azimuth=90.0,
     ),
-    sim=SimulationCfg(mujoco=MujocoCfg(timestep=0.005)),
-    decimation=4,  # 50 Hz control; retune to the real loop rate (SIM2REAL.md sec 6)
+    # 400 Hz physics, 50 Hz control. Twice the physics rate velocity_task.py
+    # uses, and it costs roughly twice the wall clock -- but the ODrive PI loop
+    # in javis/mdp/actions.py is integrated explicitly, so its stiffness is
+    # capped by the timestep (see DrivetrainCfg.stability_alpha). At 200 Hz the
+    # gain would have to be soft enough that the wheel stops behaving like the
+    # velocity source the policy assumes. Control stays at 50 Hz -- retune to
+    # the real loop rate once measured (SIM2REAL.md sec 6).
+    sim=SimulationCfg(mujoco=MujocoCfg(timestep=0.0025)),
+    decimation=8,
     episode_length_s=20.0,
   )
 

@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
                    help="payload fore/aft offset, m")
     p.add_argument("--payload-z", type=float, nargs="+", default=[0.30],
                    help="payload mount height above the axle, m")
+    p.add_argument("--vel-gain", type=float, default=None,
+                   help="override the ODrive vel_gain the policy runs against, "
+                        "to check whether it still works at whatever gain the "
+                        "real board turns out to reach")
+    p.add_argument("--vel-integrator-gain", type=float, default=None)
     p.add_argument("--out-dir", type=Path, default=Path("logs/eval"))
     p.add_argument("--tag", default="",
                    help="suffix for the output filenames, so sweeps over "
@@ -84,6 +89,8 @@ def run_sweep(args, grid: np.ndarray):
         lin_vel_x=args.lin_vel_x,
         ang_vel_z=args.ang_vel_z,
         episode_length_s=args.horizon_s,
+        vel_gain=args.vel_gain,
+        vel_integrator_gain=args.vel_integrator_gain,
     )
     env, policy, _ = eval_utils.load_policy(
         args.task, args.checkpoint, env_cfg, args.device

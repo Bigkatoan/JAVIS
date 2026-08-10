@@ -34,9 +34,13 @@ therefore reads and writes the same entry.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 Range = tuple[float, float]
+
+# ODrive states velocities in turns/s; the controller math here works in rad/s.
+_TWO_PI = 2.0 * math.pi
 
 
 def lerp_range(easy: Range, hard: Range, level: float) -> Range:
@@ -207,53 +211,69 @@ class ContactCfg:
 
 @dataclass(frozen=True)
 class DrivetrainCfg:
-  """The ODrive velocity loop, and how much of it we admit we don't know.
+  """The ODrive velocity loop.
+
+  Gains are written in **ODrive native units** -- literally the numbers typed
+  into `axis0.controller.config` -- so tuning the board to match the simulation
+  is a copy, not a conversion. The per-radian values the controller math
+  actually uses are derived properties at the bottom.
 
   `use_pi_actuator` selects javis/mdp/actions.py's explicit PI loop over
   mjlab's BuiltinVelocityActuatorCfg. The builtin one is proportional only,
-  while the real board runs P+I (vel_gain 0.25 N*m/(turn/s), vel_integrator_gain
-  0.15). That integral term is exactly what absorbs a load change on hardware;
-  leaving it out of sim teaches the policy to do that job itself, and then it
-  double-compensates on the real robot. Set False to A/B against the builtin.
+  while the real board runs P+I. That integral term is exactly what absorbs a
+  load change on hardware; leaving it out of sim teaches the policy to do that
+  job itself, and then it double-compensates against the real board. Set False
+  to A/B against the builtin.
   """
 
   use_pi_actuator: bool = True
 
-  # !! The gains currently on the hardware CANNOT balance this robot. !!
+  # !! These are the gains the hardware must be RETUNED TO, not what it has. !!
   #
-  # The board runs vel_gain = 0.25 N*m/(turn/s) = 0.0398 N*m/(rad/s)
-  # (scripts/motor_web_test.py, scripts/setup_odrive.py). Against a wheel
-  # inertia of 0.0122 kg*m^2 that is a velocity-loop time constant of
-  # J/kp = 307 ms, while the robot's own fall time constant is
-  # sqrt(h/g) = 171 ms. A balance controller cannot stabilize a pendulum
-  # through an inner loop slower than the pendulum -- the wheel is still on its
-  # way to the commanded speed when the robot has already gone over. In sim it
-  # shows up as a policy that saturates its command range and still falls.
+  # The board currently runs vel_gain = 0.25, which against a 0.0122 kg*m^2
+  # wheel is a velocity-loop time constant of 307 ms -- while the robot's own
+  # fall time constant is sqrt(h/g) = 171 ms. No balance controller can
+  # stabilize a pendulum through an inner loop slower than the pendulum: the
+  # wheel is still on its way to the commanded speed when the robot has already
+  # gone over. It is worse while driving, where the loop must also accelerate
+  # 11 kg of robot (effective inertia 0.119 kg*m^2, so ~3 s at that gain).
   #
-  # For the loop to be fast enough to be transparent to the balance controller
-  # it needs tau ~= 20 ms, i.e. kp = J/tau = 0.61 N*m/(rad/s), which is ODrive
-  # vel_gain = 3.83 N*m/(turn/s) -- roughly 15x what is configured now, and 10x
-  # the top of the range scripts/tune_wheel_pid.py currently sweeps (that sweep
-  # was done on a free-spinning wheel, where soft gains are perfectly fine).
+  # Chosen with scripts/tune_sim_gains.py, which sweeps candidates against both
+  # the loaded and the unloaded wheel and scores them exactly the way
+  # scripts/tune_wheel_pid.py scores real hardware. At these values the loop is
+  # 4.9 ms unloaded and 48 ms driving, comfortably inside the 171 ms the balance
+  # problem allows, so the wheel behaves as the near-ideal velocity source the
+  # policy assumes.
   #
-  # These defaults are therefore the values the hardware must be RETUNED to,
-  # not the values it has. Logged as an action item in SIM2REAL.md sec 3.
-  kp_nm_per_rad_s: float = 0.61
-  # ODrive's own rule of thumb is vel_integrator_gain = 0.5 * bandwidth *
-  # vel_gain; at a 10 Hz bandwidth that is 19 N*m/(turn/s)/s = 3.0 in per-radian
-  # units. The integral term is what silently absorbs an unknown payload.
-  ki_nm_per_rad: float = 3.0
+  # What this means electrically, before putting it on hardware: with
+  # Kt = 0.207 N*m/A a vel_gain of 15.7 saturates the 15 A limit at a velocity
+  # error of only 1.2 rad/s. Large errors therefore command full torque, which
+  # is right for balance recovery -- but encoder noise is amplified ~63x
+  # relative to today, so expect to back off if the wheels buzz at rest.
+  # Raise it in steps on a stand, not in one jump on the floor.
+  vel_gain: float = 15.0
+  """Proportional gain, N*m/(turn/s). ODrive `controller.config.vel_gain`.
 
-  # What the board is actually set to today, for reference and for the A/B in
-  # scripts/eval_payload_sweep.py --board-gains.
-  kp_as_configured: float = 0.0398
-  ki_as_configured: float = 0.0239
+  Round number on purpose: this is a target to tune the hardware towards, and
+  the sweep is flat enough between 9 and 19 that a memorable value costs
+  nothing. Gives kp*dt/J = 0.49 at the 2.5 ms physics timestep -- a 4x
+  stability margin."""
+  vel_integrator_gain: float = 75.0
+  """Integral gain, N*m/(turn/s)/s. ODrive
+  `controller.config.vel_integrator_gain`. ODrive's own rule of thumb is
+  0.5 * bandwidth * vel_gain; this is that at a 10 Hz bandwidth."""
+  vel_ramp_rate: float = 25.0
+  """Slew limit, turn/s^2. ODrive `controller.config.vel_ramp_rate`, used by
+  INPUT_MODE_VEL_RAMP (see scripts/motor_web_test.py)."""
 
-  # INPUT_MODE_VEL_RAMP on the real board (scripts/motor_web_test.py).
-  vel_ramp_rad_s2: float = 25.0 * 2.0 * 3.141592653589793
+  # What the board is set to today. Kept so the gap stays visible. To check
+  # whether a policy survives at whatever gain the hardware actually reaches:
+  #   scripts/eval_payload_sweep.py --vel-gain 6 --vel-integrator-gain 30
+  vel_gain_as_configured: float = 0.25
+  vel_integrator_gain_as_configured: float = 0.15
 
   # Wide, because the retuned value is a target rather than a measurement: the
-  # policy should not depend on hitting it exactly.
+  # policy must not depend on the board landing exactly on it.
   gain_scale_easy: Range = (0.9, 1.1)
   gain_scale_hard: Range = (0.6, 1.6)
 
@@ -261,6 +281,34 @@ class DrivetrainCfg:
   # ROS2 hops. Unmeasured -- SIM2REAL.md sec 6 still has the control rate blank.
   latency_steps_easy: tuple[int, int] = (0, 1)
   latency_steps_hard: tuple[int, int] = (1, 3)
+
+  @property
+  def kp_nm_per_rad_s(self) -> float:
+    """vel_gain converted from ODrive's per-turn units to per-radian."""
+    return self.vel_gain / _TWO_PI
+
+  @property
+  def ki_nm_per_rad(self) -> float:
+    return self.vel_integrator_gain / _TWO_PI
+
+  @property
+  def vel_ramp_rad_s2(self) -> float:
+    return self.vel_ramp_rate * _TWO_PI
+
+  def stability_alpha(self, timestep: float, wheel_inertia: float = 0.0122) -> float:
+    """Forward-Euler stability number for the PI loop, `kp * dt / J`.
+
+    The loop computes torque explicitly once per physics step, so its feedback
+    path is forward Euler: it diverges above 2 and rings below that. `J` is the
+    *unloaded* wheel, the smallest inertia the loop can ever see -- which is
+    exactly the case when a wheel unloads or slips, i.e. when the robot is
+    already in trouble and the loop most needs to behave.
+
+    The real board has no such limit (its loop runs at 8 kHz); this is purely
+    a constraint on how finely the simulation must be integrated to represent
+    the gain honestly.
+    """
+    return self.kp_nm_per_rad_s * timestep / wheel_inertia
 
 
 @dataclass(frozen=True)
