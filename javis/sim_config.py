@@ -277,10 +277,14 @@ class DrivetrainCfg:
   gain_scale_easy: Range = (0.9, 1.1)
   gain_scale_hard: Range = (0.6, 1.6)
 
-  # Command latency in control steps (20 ms each at 50 Hz): USB round trip plus
-  # ROS2 hops. Unmeasured -- SIM2REAL.md sec 6 still has the control rate blank.
-  latency_steps_easy: tuple[int, int] = (0, 1)
-  latency_steps_hard: tuple[int, int] = (1, 3)
+  # Command latency in control steps (10 ms each at the 100 Hz control rate --
+  # see javis/balance_task.py CONTROL_HZ): USB round trip plus ROS2 hops.
+  # Unmeasured -- SIM2REAL.md sec 6 still has the real latency blank, so these
+  # step counts are chosen to span the same ~0-60 ms window a 50 Hz control
+  # rate would have covered at (0,1)/(1,3) steps, not derived from anything
+  # newly known about the real latency itself.
+  latency_steps_easy: tuple[int, int] = (0, 2)
+  latency_steps_hard: tuple[int, int] = (2, 6)
 
   @property
   def kp_nm_per_rad_s(self) -> float:

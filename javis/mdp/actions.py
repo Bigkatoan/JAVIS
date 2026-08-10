@@ -68,8 +68,8 @@ class OdriveVelocityActionCfg(BaseActionCfg):
 class OdriveVelocityAction(BaseAction):
   """Discrete PI velocity controller with anti-windup and a slew-rate limit.
 
-  Per control step (50 Hz) the policy's action becomes a wheel velocity target.
-  Per physics step (200 Hz) the loop:
+  Per control step (100 Hz, javis/balance_task.py CONTROL_HZ) the policy's
+  action becomes a wheel velocity target. Per physics step (400 Hz) the loop:
 
     1. slews the working setpoint toward the target at `vel_ramp_rad_s2`
        (the board's INPUT_MODE_VEL_RAMP),
