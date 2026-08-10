@@ -88,7 +88,15 @@ TORQUE_CONSTANT = 0.207  # N*m/A, measured 2026-08-06 (see robot_constants.py
 ENCODER_CS_GPIO_PIN = 7
 ENCODER_CPR = 16384
 ENCODER_BANDWIDTH = 3000
-ENCODER_CALIB_RANGE = 10
+# Fraction-of-expected-response tolerance for the CPR/pole-pairs sanity check
+# run at the end of AXIS_STATE_ENCODER_OFFSET_CALIBRATION (fails with
+# ERROR_CPR_POLEPAIRS_MISMATCH if exceeded). This was 10 (1000% tolerance --
+# 500x looser than the firmware's own default of 0.02), which silently
+# accepted a calibration scan even when the encoder's response during the
+# scan was wildly inconsistent with the commanded phase. Confirmed via the
+# firmware source (Firmware/MotorControl/encoder.hpp) that 0.02 is the
+# intended default; using 0.05 here for a little real-world noise margin.
+ENCODER_CALIB_RANGE = 0.05
 
 # --- Controller: velocity mode (matches WHEEL_ACTUATOR_CFG / velocity_task.py) ---
 VEL_LIMIT = 15.0  # turns/s safety ceiling -- NOT the sample's 120 (~7200 RPM)
@@ -168,7 +176,7 @@ def calibrate_encoder_with_retry(axis, max_attempts: int = 3) -> bool:
 # steadily (integrator winding up against a wrong commutation angle) while
 # barely moving. These thresholds are deliberately loose -- this is a sanity
 # check for "clearly broken", not a precision measurement.
-VERIFY_TEST_VEL = 1.5  # turn/s
+VERIFY_TEST_VEL = 2.5  # turn/s
 VERIFY_MAX_CURRENT_A = 4.0
 VERIFY_MIN_VEL_FRACTION = 0.6
 

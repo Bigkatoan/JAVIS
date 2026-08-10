@@ -220,3 +220,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local ODrive firmware build workspace (cloned source + Docker build artifacts)
+firmware_dev/
