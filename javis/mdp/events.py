@@ -158,16 +158,42 @@ def _payload_visual(
   return size, rgba
 
 
-def _max_supportable_mass(max_slope_rad: float, margin_deg: float) -> float:
-  """Heaviest robot that can still balance on the steepest terrain it will see.
+_FORCE_MAX_N = 2.0 * WHEEL_EFFORT_LIMIT_NM / WHEEL_RADIUS_M
 
-  Ground force is capped at F = 2 * tau_max / r. Holding a lean of theta costs
-  M g tan(theta), and standing on a slope alpha already costs M g tan(alpha), so
-  the robot needs tan(alpha + margin) <= F / (M g) to have any authority left.
+
+def _max_lean_rad(total_mass: torch.Tensor) -> torch.Tensor:
+  """Steepest lean 2 x wheel torque can hold, at this total mass.
+
+  F = 2 * tau_max / r is the whole ground-force budget; holding any lean
+  theta costs M g tan(theta), so the robot runs out of authority at
+  theta = atan(F / (M g)).
   """
-  force_max = 2.0 * WHEEL_EFFORT_LIMIT_NM / WHEEL_RADIUS_M
-  required = math.tan(min(max_slope_rad + math.radians(margin_deg), math.radians(85.0)))
-  return force_max / (GRAVITY * max(required, 1e-6))
+  return torch.atan(_FORCE_MAX_N / (GRAVITY * total_mass.clamp_min(1e-3)))
+
+
+def _required_lean_rad(
+  com_x: torch.Tensor, com_height: torch.Tensor, max_slope_rad: float
+) -> torch.Tensor:
+  """Lean the robot must be able to sustain, given where its own weight sits.
+
+  Two contributions, added because the worst case is both at once (leaning
+  further uphill than the offset alone would):
+
+  - theta_eq = atan(com_x / com_height): the offset payload's OWN static
+    equilibrium lean. A CoM sitting ahead of the axle needs the robot resting
+    at this angle before gravity even balances through the contact point --
+    this is not a disturbance to reject, it is where the robot lives at rest.
+    Earlier sweeps (scripts/eval_payload_sweep.py) found this the dominant
+    failure axis, well ahead of total mass alone -- a mass-only check misses
+    it entirely, which is the bug this function exists to fix.
+  - max_slope_rad: the steepest terrain the robot will be asked to stand on.
+
+  com_height is measured from the ground (wheel_radius + the chassis CoM's z
+  in the body frame, which is itself measured from the wheel axle -- see
+  scripts/inspect_mass.py for the same convention).
+  """
+  theta_eq = torch.atan2(com_x, com_height.clamp_min(1e-3))
+  return theta_eq.abs() + max_slope_rad
 
 
 def _sample_load(
@@ -314,12 +340,25 @@ def randomize_load(
 
   fcfg = cfg.feasibility
   if fcfg.enabled:
+    moments = mass_model.get_moments()[mass_model.CHASSIS_BODY]
     wheel_total = state.wheel_masses[env_ids].sum(dim=-1)
-    mass_cap = _max_supportable_mass(max_slope_rad, fcfg.margin_deg)
-    payload_idx = mass_model.get_moments()[mass_model.CHASSIS_BODY].index("payload")
+    payload_idx = moments.index("payload")
+    margin_rad = math.radians(fcfg.margin_deg)
+
+    def is_bad(m: torch.Tensor, ppos: torch.Tensor, wpos: torch.Tensor) -> torch.Tensor:
+      # fuse_com_only, not fuse: this runs up to max_resample_attempts times
+      # per reset batch, and the feasibility check only needs the CoM, not
+      # the full inertia tensor -- see fuse_com_only's docstring.
+      chassis_mass, com = mass_model.fuse_com_only(
+        m, moments, point_positions={"payload": ppos, "wiring_misc": wpos}
+      )
+      com_height = com[..., 2] + WHEEL_RADIUS_M
+      required = _required_lean_rad(com[..., 0], com_height, max_slope_rad) + margin_rad
+      available = _max_lean_rad(chassis_mass + wheel_total)
+      return required > available
 
     for _ in range(fcfg.max_resample_attempts):
-      bad = (masses.sum(dim=-1) + wheel_total) > mass_cap
+      bad = is_bad(masses, payload_pos, wiring_pos)
       if not bool(bad.any()):
         break
       k = int(bad.sum())
@@ -328,15 +367,19 @@ def randomize_load(
       payload_pos[bad] = new_payload
       wiring_pos[bad] = new_wiring
     else:
-      # Stragglers after the attempt budget: shed payload rather than loop
-      # forever. Only the payload is trimmed -- the chassis is what it is.
-      over = (masses.sum(dim=-1) + wheel_total - mass_cap).clamp_min(0.0)
-      masses[:, payload_idx] = (masses[:, payload_idx] - over).clamp_min(0.0)
+      # Stragglers after the attempt budget: drop the payload entirely rather
+      # than loop forever. Zeroing it (not partially trimming) is deliberate
+      # -- the failure mode here can be an extreme MOUNT POSITION as much as
+      # an extreme mass, and there is no simple closed-form "how much to
+      # trim" once the criterion depends on lean angle rather than mass
+      # alone. Zero payload reverts to the bare chassis's own near-centred
+      # CoM (+1.4 mm fore/aft, scripts/inspect_mass.py), which is feasible at
+      # any chassis mass in range with margin to spare. The chassis mass/
+      # position itself is left alone -- that part of the sample is kept.
+      bad = is_bad(masses, payload_pos, wiring_pos)
+      masses[bad, payload_idx] = 0.0
 
-    # Surfaced through the curriculum term, which is what mjlab logs.
-    state.last_infeasible_frac = float(
-      ((masses.sum(dim=-1) + wheel_total) > mass_cap).float().mean()
-    )
+    state.last_infeasible_frac = float(is_bad(masses, payload_pos, wiring_pos).float().mean())
 
   state.group_masses[env_ids] = masses
   state.payload_pos[env_ids] = payload_pos
