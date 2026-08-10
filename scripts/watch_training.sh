@@ -16,9 +16,18 @@
 # over SSH -- but forcing it means this works the same either way).
 #
 # Usage:
-#   scripts/watch_training.sh                 # rough, latest run, latest checkpoint
-#   scripts/watch_training.sh flat             # flat task instead
-#   scripts/watch_training.sh rough 2026-08-10_11-03-29   # a specific run
+#   scripts/watch_training.sh                     # rough, latest run+checkpoint, 1 robot
+#   scripts/watch_training.sh flat                 # flat task instead
+#   scripts/watch_training.sh rough "" 128         # same run, 128 robots at once
+#   scripts/watch_training.sh rough 2026-08-10_11-03-29 128   # a specific run, 128 robots
+#
+# The 3rd arg is num_envs for the VIEWER process, independent of how many
+# envs the training run itself used -- the Viser scene renders every one of
+# them by default (a "show only selected" toggle in the browser's Controls
+# tab switches back to one), unlike the offline video renderer
+# (scripts/record_payload_video.py), which only ever shows one robot plus a
+# couple of neighbours. More viewer envs means more GPU/browser load; 128 is
+# comfortable, a few hundred is where it starts to feel heavy.
 #
 # The browser URL is printed by viser itself once it starts (default
 # http://localhost:8080). Training on a remote box over SSH? Forward the port
@@ -29,6 +38,7 @@ set -euo pipefail
 
 TERRAIN="${1:-rough}"
 RUN="${2:-}"
+NUM_ENVS="${3:-1}"
 
 case "$TERRAIN" in
   flat)  TASK="Javis-Payload-Flat";  EXPERIMENT="javis_payload_flat" ;;
@@ -64,11 +74,11 @@ if [[ -z "$LATEST_CKPT" ]]; then
   exit 1
 fi
 
-echo "[watch] task=$TASK run=$RUN checkpoint=$(basename "$LATEST_CKPT")"
+echo "[watch] task=$TASK run=$RUN checkpoint=$(basename "$LATEST_CKPT") num_envs=$NUM_ENVS"
 echo "[watch] opening the web viewer -- once it's up, newer checkpoints saved by"
 echo "[watch] the still-running training job show up in its checkpoint dropdown"
 echo "[watch] with no restart needed."
 exec .venv/bin/play "$TASK" \
   --checkpoint-file "$LATEST_CKPT" \
   --viewer viser \
-  --num-envs 1
+  --num-envs "$NUM_ENVS"
