@@ -515,6 +515,38 @@ def _mat_to_quat(mat: torch.Tensor) -> torch.Tensor:
   return torch.where(quat[..., :1] < 0, -quat, quat)
 
 
+def fuse_com_only(
+  masses: torch.Tensor,
+  moments: BodyMoments,
+  point_positions: dict[str, torch.Tensor] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Just (total mass, centre of mass) -- the cheap first-moment half of `fuse`.
+
+  For callers that only need to know *where the weight is*, not the full
+  inertia tensor: a feasibility check deciding whether to keep or resample a
+  candidate configuration, for instance. Skips the second-moment
+  accumulation and the eigendecomposition entirely, so it's safe to call
+  inside a resample loop (up to `FeasibilityCfg.max_resample_attempts` times
+  per reset batch) without the cost `fuse`'s `eigh_fn` step would add there.
+  """
+  device, dtype = masses.device, masses.dtype
+  unit_com = torch.as_tensor(moments.unit_com, device=device, dtype=dtype)
+  batch = masses.shape[:-1]
+  unit_com = unit_com.expand(*batch, *unit_com.shape)
+
+  if point_positions:
+    unit_com = unit_com.clone()
+    for group, pos in point_positions.items():
+      i = moments.index(group)
+      if not moments.is_point[i]:
+        raise ValueError(f"group '{group}' is mesh-backed; its position is fixed")
+      unit_com[..., i, :] = pos.to(device=device, dtype=dtype).expand(*batch, 3)
+
+  total = masses.sum(dim=-1)
+  com = (masses[..., None] * unit_com).sum(dim=-2) / total.clamp_min(1e-9)[..., None]
+  return total, com
+
+
 def fuse(
   masses: torch.Tensor,
   moments: BodyMoments,
