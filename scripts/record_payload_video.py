@@ -48,8 +48,110 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--height", type=int, default=540)
     p.add_argument("--lin-vel-x", type=float, default=0.3)
     p.add_argument("--ang-vel-z", type=float, default=0.4)
+    p.add_argument("--no-vectors", action="store_true",
+                   help="skip the target-vs-current velocity vector panel")
     p.add_argument("--out", type=Path, default=Path("logs/eval/payload_configs.mp4"))
     return p.parse_args()
+
+
+def render_vector_panel(
+    target_xy: tuple[float, float],
+    current_xy: tuple[float, float],
+    target_wz: float,
+    current_wz: float,
+    max_speed: float,
+    size_px: int = 260,
+) -> np.ndarray:
+    """Draw the two vectors that matter for judging tracking at a glance:
+    target (commanded) velocity vs. current (actual) velocity, as arrows on a
+    compass with "forward" (the robot's local +x) pointing up.
+
+    Both come straight from the same frame the policy itself sees -- the
+    command term's body-frame (vx, vy) and `root_link_lin_vel_b` -- so what is
+    drawn is exactly what the policy is trying to match, not a world-frame
+    reprojection of it. When the arrows overlap, tracking is good; when the
+    orange (current) arrow points somewhere the green (target) one doesn't,
+    that gap *is* the tracking error, and it is visible as a gap, not a number
+    to interpret.
+
+    Yaw rate has no spatial direction to draw, so it is a pair of numbers
+    under the compass rather than a third arrow -- keeping this to exactly two
+    vectors, per the ask.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle, FancyArrow
+
+    dpi = 100
+    fig = plt.figure(figsize=(size_px / dpi, size_px / dpi), dpi=dpi)
+    fig.patch.set_alpha(0.0)
+    ax = fig.add_axes((0.0, 0.0, 1.0, 1.0))
+    ax.set_facecolor("#101216")
+    ax.patch.set_alpha(0.78)
+
+    lim = max_speed * 1.15
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    for frac, label in ((0.5, None), (1.0, f"{max_speed:g} m/s")):
+        ax.add_patch(Circle((0, 0), max_speed * frac, fill=False,
+                            edgecolor="#3a4048", linewidth=1.0))
+        if label:
+            ax.text(0, max_speed * frac, label, color="#5a6270", fontsize=7,
+                    ha="center", va="bottom")
+    ax.axhline(0, color="#3a4048", linewidth=1.0)
+    ax.axvline(0, color="#3a4048", linewidth=1.0)
+    ax.text(0, lim * 0.98, "fwd", color="#5a6270", fontsize=7,
+            ha="center", va="top")
+
+    def arrow(xy: tuple[float, float], color: str, label: str) -> None:
+        vx, vy = xy
+        # Body frame: x = forward, y = left. Compass: up = forward,
+        # right = -left, i.e. plot (-vy, vx).
+        dx, dy = -vy, vx
+        if abs(dx) > 1e-4 or abs(dy) > 1e-4:
+            ax.add_patch(FancyArrow(
+                0, 0, dx, dy, width=max_speed * 0.025,
+                head_width=max_speed * 0.11, head_length=max_speed * 0.14,
+                length_includes_head=True, color=color, alpha=0.9,
+            ))
+        else:
+            ax.add_patch(Circle((0, 0), max_speed * 0.02, color=color, alpha=0.9))
+        speed = float(np.hypot(vx, vy))
+        ax.text(lim * -0.95, lim * (0.86 if label == "target" else 0.72),
+                f"{label}  {speed:.2f} m/s", color=color, fontsize=8,
+                ha="left", va="center", family="monospace")
+
+    arrow(target_xy, "#3ddc6a", "target")
+    arrow(current_xy, "#ff9d3d", "current")
+
+    ax.text(lim * -0.95, lim * -0.88,
+            f"yaw target {target_wz:+.2f}  actual {current_wz:+.2f} rad/s",
+            color="#c7ccd3", fontsize=7, ha="left", va="center", family="monospace")
+
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba()).copy()
+    plt.close(fig)
+    return rgba
+
+
+def composite_rgba(frame: np.ndarray, overlay_rgba: np.ndarray,
+                   x: int, y: int) -> np.ndarray:
+    """Alpha-blend `overlay_rgba` onto `frame` (RGB) with its top-left at (x, y)."""
+    h, w = overlay_rgba.shape[:2]
+    y2, x2 = min(y + h, frame.shape[0]), min(x + w, frame.shape[1])
+    if y2 <= y or x2 <= x:
+        return frame
+    region = overlay_rgba[: y2 - y, : x2 - x]
+    alpha = region[..., 3:4].astype(np.float32) / 255.0
+    out = frame.copy()
+    bg = out[y:y2, x:x2].astype(np.float32)
+    fg = region[..., :3].astype(np.float32)
+    out[y:y2, x:x2] = (alpha * fg + (1 - alpha) * bg).astype(np.uint8)
+    return out
 
 
 def render_caption(lines: list[str], width: int) -> np.ndarray:
@@ -101,7 +203,12 @@ def record(args) -> None:
         args.task, args.checkpoint, env_cfg, args.device, render_mode="rgb_array"
     )
     base = env.unwrapped
+    robot = base.scene["robot"]
     domain = JavisDomainCfg()
+    # Fixed rather than auto-scaled per frame: a constant ring scale is what
+    # makes the panel comparable across configurations and across time, and
+    # 0.6 covers the +-0.5 m/s the policy was trained on with a small margin.
+    vector_scale = max(0.6, abs(args.lin_vel_x) * 1.2)
 
     steps = int(round(args.seconds / base.step_dt))
     render_every = max(1, int(round(1.0 / (args.fps * base.step_dt))))
@@ -152,6 +259,20 @@ def record(args) -> None:
                 h = min(strip.shape[0], frame.shape[0])
                 out = np.asarray(frame).copy()
                 out[:h] = strip[:h]
+
+                if not args.no_vectors:
+                    cmd = base.command_manager.get_command("twist")[0].cpu().numpy()
+                    lin_actual = robot.data.root_link_lin_vel_b[0, :2].cpu().numpy()
+                    ang_actual = float(robot.data.root_link_ang_vel_b[0, 2])
+                    panel = render_vector_panel(
+                        target_xy=(float(cmd[0]), float(cmd[1])),
+                        current_xy=(float(lin_actual[0]), float(lin_actual[1])),
+                        target_wz=float(cmd[2]), current_wz=ang_actual,
+                        max_speed=vector_scale,
+                    )
+                    out = composite_rgba(out, panel, x=out.shape[1] - panel.shape[1] - 8,
+                                         y=out.shape[0] - panel.shape[0] - 8)
+
                 writer.append_data(out)
                 frames += 1
 
