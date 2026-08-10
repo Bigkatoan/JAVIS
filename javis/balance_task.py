@@ -44,7 +44,6 @@ from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.velocity import mdp as velocity_mdp
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.terrains import (
   BoxFlatTerrainCfg,
   HfPyramidSlopedTerrainCfg,
@@ -56,6 +55,7 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from .mdp import actions as javis_actions
+from .mdp import commands as javis_commands
 from .mdp import curriculums as javis_curriculums
 from .mdp import events as javis_events
 from .mdp import observations as javis_obs
@@ -372,13 +372,16 @@ def _make_env_cfg(rough: bool = False, play: bool = False) -> ManagerBasedRlEnvC
     }
 
   commands: dict[str, CommandTermCfg] = {
-    "twist": UniformVelocityCommandCfg(
+    # JavisVelocityCommandCfg, not mjlab's UniformVelocityCommandCfg directly:
+    # same term, patched to not crash the Viser web viewer's joystick GUI when
+    # an axis's range is zero-width -- see javis/mdp/commands.py.
+    "twist": javis_commands.JavisVelocityCommandCfg(
       entity_name="robot",
       resampling_time_range=(3.0, 8.0),
       rel_standing_envs=0.2,
       heading_command=False,
       debug_vis=True,
-      ranges=UniformVelocityCommandCfg.Ranges(
+      ranges=javis_commands.JavisVelocityCommandCfg.Ranges(
         lin_vel_x=(-0.5, 0.5),
         lin_vel_y=(0.0, 0.0),  # differential drive cannot strafe
         ang_vel_z=(-1.0, 1.0),
