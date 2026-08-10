@@ -169,10 +169,12 @@ bằng), nhưng nhiễu encoder cũng bị khuếch đại gấp ~60 lần.
 
 > ⚠️ Lưu ý về sim: vòng PI trong `javis/mdp/actions.py` tính momen **tường minh
 > mỗi bước vật lý**, nên gain và timestep không độc lập nhau (`kp·dt/J < 1`).
-> Vì thế task đã đổi sang **timestep 2.5 ms (400 Hz), decimation 8** để giữ
-> nguyên 50 Hz điều khiển. Board thật chạy vòng này ở 8 kHz nên không vướng giới
-> hạn đó — đây thuần tuý là ràng buộc của mô phỏng. Đổi timestep mà quên đổi
-> gain thì `OdriveVelocityAction` sẽ raise thẳng chứ không âm thầm phân kỳ.
+> Vì thế task đã đổi sang **timestep 2.5 ms (400 Hz), decimation 4** để giữ
+> **100 Hz điều khiển** (mục 6 bên dưới — số theo trí nhớ, chưa đo). Board thật
+> chạy vòng này ở 8 kHz nên không vướng giới hạn đó — đây thuần tuý là ràng
+> buộc của mô phỏng. Đổi `CONTROL_HZ` mà không chia hết cho timestep vật lý,
+> hoặc gain quá cao so với timestep, thì `OdriveVelocityAction` sẽ raise thẳng
+> chứ không âm thầm phân kỳ.
 
 - [x] **Board thật chỉ dùng 1 axis/board** (`axis0`, `axis1` là "ghost" —
       không có động cơ thật). Robot dùng 2 board riêng, mỗi board 1 bánh —
@@ -443,9 +445,13 @@ sau này đổi ý.
 
 - [ ] **Tần số vòng điều khiển thật trên robot** (Jetson gửi lệnh xuống
       ODrive bao nhiêu Hz?): __________ Hz
-      → phải khớp với `decimation` × `SimulationCfg.mujoco.timestep` khi
-      định nghĩa RL task, để 1 bước hành động của policy trong sim tương ứng
-      đúng khoảng thời gian thật trên robot.
+      → `javis/balance_task.py` (`CONTROL_HZ`) hiện để **100 Hz**, theo trí
+      nhớ người dùng (USB/ROS2 round-trip thật "khoảng 100-150Hz") — **chưa
+      phải số đo bằng timer ROS2 thật**, chỉ là ước lượng tạm thay cho số bịa
+      50Hz trước đó. Đo xong thì sửa thẳng `CONTROL_HZ` (không phải
+      `decimation` — `decimation` tự tính lại theo `CONTROL_HZ` và
+      `PHYSICS_TIMESTEP_S`), rồi **train lại từ đầu** (đổi control rate làm
+      thay đổi cả obs history length, không phải chỉnh nhẹ được).
       (Driver USB↔ODrive ở đầu mục này là phần thay thế
       `data.ctrl[...]`/`data.sensordata[...]` trong sim bằng I/O thật —
       driver CAN cũ không còn cần viết nữa, xem quyết định chuyển sang USB

@@ -1,5 +1,15 @@
 # Checkpoints
 
+> ⚠️ **`javis_payload_flat/model_1499.*` is now stale.** It was trained before
+> the control-rate retune (50 Hz → 100 Hz, matching the real hardware's
+> measured ceiling) and the added init-velocity randomization / IMU bias
+> noise. The observation size changed with it (192 → 384 for the actor, 12 →
+> 24 history frames), so this checkpoint's shapes no longer match
+> `javis/balance_task.py` and it **cannot be loaded against current code** --
+> `runner.load()` will fail on a shape mismatch. Kept here as a historical
+> record of the mass-model + drivetrain-gain work it validated; train a fresh
+> one (`scripts/train.sh`) before deploying anything.
+
 Trained policies committed directly to the repo, small enough (a few MB) that
 git LFS isn't needed. `logs/` (where training writes by default) stays
 git-ignored — everything here was copied out deliberately.

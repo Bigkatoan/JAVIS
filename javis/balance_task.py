@@ -51,6 +51,7 @@ from mjlab.terrains import (
   TerrainEntityCfg,
   TerrainGeneratorCfg,
 )
+from mjlab.utils.noise import NoiseModelWithAdditiveBiasCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
@@ -78,10 +79,39 @@ from .sim_config import (
 _ROBOT = SceneEntityCfg("robot")
 _CHASSIS = SceneEntityCfg("robot", body_names=(CHASSIS_BODY_NAME,))
 
-# ~0.24 s at 50 Hz. Long enough to contain a full response to an action -- which
-# is what encodes the inertia -- and short enough that the observation stays
-# small enough to run on the Jetson alongside everything else on that board.
-OBS_HISTORY_LENGTH = 12
+# Control rate. Real hardware ceiling, from measurement/recollection rather
+# than the original 50 Hz placeholder (SIM2REAL.md sec 6 -- still not a
+# rigorous benchmark, update this the moment a real number exists):
+# USB/ROS2 round trip tops out around 100-150 Hz. 100 is the conservative end
+# of that range on purpose -- a policy trained at the SLOWER rate (sparser
+# corrections between observations) is the harder case, and generalizes
+# forward to a real loop running faster than it trained at more safely than
+# the other direction would.
+CONTROL_HZ = 100.0
+
+# 400 Hz. Not derived from CONTROL_HZ -- this is a separate, lower-level
+# requirement: the ODrive PI loop in javis/mdp/actions.py computes torque
+# explicitly once per physics step, so its stiffness is capped by this
+# timestep (DrivetrainCfg.stability_alpha). At the coarser 200 Hz
+# javis/velocity_task.py still uses, the retuned drivetrain gain would ring;
+# see SIM2REAL.md sec 3. decimation is what reconciles the two rates.
+PHYSICS_TIMESTEP_S = 0.0025
+_DECIMATION_FLOAT = 1.0 / (CONTROL_HZ * PHYSICS_TIMESTEP_S)
+assert _DECIMATION_FLOAT == round(_DECIMATION_FLOAT), (
+  f"CONTROL_HZ={CONTROL_HZ} does not divide evenly into PHYSICS_TIMESTEP_S="
+  f"{PHYSICS_TIMESTEP_S} (decimation would be {_DECIMATION_FLOAT}, not an "
+  "integer) -- pick a CONTROL_HZ that does, or decimation will silently "
+  "round to a slightly different actual control rate than CONTROL_HZ claims."
+)
+DECIMATION = round(_DECIMATION_FLOAT)
+
+# ~0.24 s of physical time, scaled to whatever CONTROL_HZ is -- long enough to
+# contain a full response to an action (what lets the policy infer inertia
+# from the response history) and short enough to stay Jetson-sized. Frame
+# count follows the control rate so the physical time window stays fixed:
+# 12 frames at 50 Hz and 24 at 100 Hz are the same ~240 ms of history.
+OBS_HISTORY_SECONDS = 0.24
+OBS_HISTORY_LENGTH = round(OBS_HISTORY_SECONDS * CONTROL_HZ)
 
 CONTACT_SENSOR_NAME = "chassis_contact"
 
@@ -141,24 +171,46 @@ def _observations(domain: JavisDomainCfg) -> dict[str, ObservationGroupCfg]:
   # delay_*_lag models the USB + ROS2 hop between sensor and policy. Unmeasured
   # (SIM2REAL.md sec 6 still has the control rate blank), so it is randomized
   # rather than assumed to be zero.
+  #
+  # IMU-sourced terms carry TWO noise sources stacked, not one:
+  #   - per-step white noise (unchanged from before) -- the sensor's own
+  #     instantaneous noise floor.
+  #   - a bias resampled once per episode and held constant for its duration
+  #     (NoiseModelWithAdditiveBiasCfg) -- a real MEMS IMU's zero-rate offset
+  #     drifts boot to boot but is roughly constant within one power cycle.
+  # This matters beyond realism: pure i.i.d. per-step noise averages out of
+  # anything the policy integrates over time, so a policy trained only against
+  # it can implicitly lean on that cancellation. A persistent bias cannot
+  # cancel the same way -- it is a genuine, unremovable estimation error the
+  # policy has to be robust to, which is a materially harder and more honest
+  # training signal. Magnitudes below are order-of-magnitude placeholders (no
+  # BMX160 datasheet noise-density figure has been pulled in), sized as a
+  # fraction of the existing per-step noise rather than derived from a
+  # spec -- replace once SIM2REAL.md sec 5 has a real number.
+  def imu_noise(step_range: float, bias_range: float) -> NoiseModelWithAdditiveBiasCfg:
+    return NoiseModelWithAdditiveBiasCfg(
+      noise_cfg=Unoise(n_min=-step_range, n_max=step_range),
+      bias_noise_cfg=Unoise(n_min=-bias_range, n_max=bias_range),
+    )
+
   actor_terms = {
     "base_lin_vel": ObservationTermCfg(
       func=envs_mdp.builtin_sensor,
       params={"sensor_name": "robot/imu_lin_vel"},
-      noise=Unoise(n_min=-0.1, n_max=0.1),
+      noise=imu_noise(0.1, 0.03),
       delay_min_lag=1,
       delay_max_lag=3,
     ),
     "base_ang_vel": ObservationTermCfg(
       func=envs_mdp.builtin_sensor,
       params={"sensor_name": "robot/imu_ang_vel"},
-      noise=Unoise(n_min=-0.1, n_max=0.1),
+      noise=imu_noise(0.1, 0.03),
       delay_min_lag=1,
       delay_max_lag=3,
     ),
     "projected_gravity": ObservationTermCfg(
       func=envs_mdp.projected_gravity,
-      noise=Unoise(n_min=-0.03, n_max=0.03),
+      noise=imu_noise(0.03, 0.015),
       delay_min_lag=1,
       delay_max_lag=3,
     ),
@@ -222,15 +274,35 @@ def _events(
       func=envs_mdp.reset_root_state_uniform,
       mode="reset",
       params={
+        # roll/pitch widened from +-0.2 to +-0.35 rad (~20 deg): every episode
+        # starts already leaning, not just occasionally. Still comfortably
+        # short of the 60 deg fall_over limit, so it stays a recoverable (if
+        # harder) start rather than a start inside the termination band.
         "pose_range": {
           "x": (-0.5, 0.5),
           "y": (-0.5, 0.5),
           "z": (0.0, 0.02),
-          "roll": (-0.2, 0.2),
-          "pitch": (-0.2, 0.2),
+          "roll": (-0.35, 0.35),
+          "pitch": (-0.35, 0.35),
           "yaw": (-math.pi, math.pi),
         },
-        "velocity_range": {},
+        # Previously {} -- every episode started from exactly zero velocity,
+        # which is not a case this robot will ever actually be in: real
+        # resets happen after a stumble, a hand-off, or a push, not from rest.
+        # Reusing push_robot's own x/y/roll/pitch magnitudes below rather than
+        # inventing new numbers: "start already having just been shoved" and
+        # "get shoved mid-episode" are the same physical event, so the same
+        # scale applies, and it's a magnitude training already tolerates via
+        # push_robot. z and yaw are new axes (push_robot doesn't touch them):
+        # a small downward settling velocity, and a modest initial spin.
+        "velocity_range": {
+          "x": (-0.3, 0.3),
+          "y": (-0.3, 0.3),
+          "z": (-0.15, 0.05),
+          "roll": (-0.3, 0.3),
+          "pitch": (-0.3, 0.3),
+          "yaw": (-0.3, 0.3),
+        },
       },
     ),
     "reset_wheels": EventTermCfg(
@@ -448,15 +520,11 @@ def _make_env_cfg(rough: bool = False, play: bool = False) -> ManagerBasedRlEnvC
       elevation=-20.0,
       azimuth=90.0,
     ),
-    # 400 Hz physics, 50 Hz control. Twice the physics rate velocity_task.py
-    # uses, and it costs roughly twice the wall clock -- but the ODrive PI loop
-    # in javis/mdp/actions.py is integrated explicitly, so its stiffness is
-    # capped by the timestep (see DrivetrainCfg.stability_alpha). At 200 Hz the
-    # gain would have to be soft enough that the wheel stops behaving like the
-    # velocity source the policy assumes. Control stays at 50 Hz -- retune to
-    # the real loop rate once measured (SIM2REAL.md sec 6).
-    sim=SimulationCfg(mujoco=MujocoCfg(timestep=0.0025)),
-    decimation=8,
+    # See CONTROL_HZ / PHYSICS_TIMESTEP_S above for the reasoning: 400 Hz
+    # physics (required for the retuned drivetrain gain to integrate cleanly)
+    # decimated down to 100 Hz control (the real hardware's measured ceiling).
+    sim=SimulationCfg(mujoco=MujocoCfg(timestep=PHYSICS_TIMESTEP_S)),
+    decimation=DECIMATION,
     episode_length_s=20.0,
   )
 

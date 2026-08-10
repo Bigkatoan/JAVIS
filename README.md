@@ -198,29 +198,42 @@ physically consistent build with no MjSpec recompile.
 the robot *is*: chassis 3–15 kg, payload 0–10 kg mounted anywhere from 5 to
 60 cm up and ±12 cm off-axis, per-wheel mass and friction drawn separately, and
 the payload swapped mid-episode. The policy is never told any of it — the actor
-sees 12 frames (0.24 s) of the same IMU / encoder / command data the real robot
-publishes and has to infer the load from how the robot responds. The critic is
-told, which costs nothing at deployment and keeps value estimation sane.
+sees 24 frames (0.24 s at the 100 Hz control rate) of the same IMU / encoder /
+command data the real robot publishes and has to infer the load from how the
+robot responds. The critic is told, which costs nothing at deployment and
+keeps value estimation sane.
 
-A curriculum widens the ranges as mean episode length improves, because
+Episodes also start harder than "just tilted": `reset_base` now draws an
+initial linear + angular velocity (reusing `push_robot`'s own magnitudes,
+since "just got shoved" and "starts having just been shoved" are the same
+physical event) rather than always starting from exactly zero velocity, and
+roll/pitch range widened from ±0.2 to ±0.35 rad. IMU-sourced observations
+(`base_lin_vel`, `base_ang_vel`, `projected_gravity`) carry a per-episode bias
+on top of the existing per-step noise (`NoiseModelWithAdditiveBiasCfg`) — a
+persistent offset a policy can't average away, unlike i.i.d. per-step noise,
+closer to how a real MEMS IMU's zero-rate offset behaves within one power
+cycle. Magnitudes are order-of-magnitude placeholders, not a datasheet figure.
+
+A curriculum widens the DR ranges (mass/payload/terrain, not the reset/noise
+changes above, which are fixed) as mean episode length improves, because
 starting at the full envelope produces no learnable episodes at all.
 
-Trained 1500 iterations on an RTX 3090 (~13 min) with the retuned drivetrain
-gains below as a smoke test — curriculum reached 0.96 (vs 0.84 at 800 iterations
-with the board's current, un-retuned gain). Mass alone: 30/30 grid cells at
-100% survival up to 30.9 kg total (2.8x nominal). Centre-of-mass offset is the
-real limit — 13/25 cells, bounded by a roughly constant ~7 degree equilibrium
-lean rather than by the offset distance itself, so a large offset mounted high
-survives where a small one mounted low does not. Not a converged policy; a
-demonstration that the pipeline and the retuned drivetrain both work.
+Control runs at **100 Hz** (`CONTROL_HZ` in `javis/balance_task.py`), not the
+50 Hz originally assumed — real USB/ROS2 round trip tops out around 100–150 Hz
+by recollection (not yet a rigorous benchmark, SIM2REAL.md sec 6), and 100 is
+the conservative end: a policy trained at the *slower* rate generalizes more
+safely to hardware running faster than it trained at than the reverse would.
+Physics still runs at 400 Hz underneath (`decimation` follows from
+`CONTROL_HZ` automatically) — that finer timestep isn't for contact accuracy,
+it's because the ODrive PI loop is integrated explicitly, so how stiff a
+velocity gain the sim can represent is capped by the physics timestep
+(`DrivetrainCfg.stability_alpha`). `OdriveVelocityAction` raises at import if
+`CONTROL_HZ`/timestep/gain ever drift out of the well-damped region, rather
+than degrading training silently.
 
-Physics runs at 400 Hz with `decimation=8`, giving the same 50 Hz control rate
-as the baseline task. The finer timestep is not for contact accuracy: the ODrive
-PI loop is integrated explicitly, so how stiff a velocity gain the sim can
-represent is capped by the timestep (`DrivetrainCfg.stability_alpha`). At 200 Hz
-the gain would have to be soft enough that the wheel stops behaving like the
-velocity source the policy assumes. `OdriveVelocityAction` raises if a future
-timestep change breaks that relationship rather than diverging quietly.
+The checkpoint that validated all this (1500 iterations, curriculum 0.96) was
+trained before this retune and is now shape-incompatible with current code —
+see `checkpoints/README.md`. Train a fresh one with `scripts/train.sh`.
 
 Evaluate and export:
 
@@ -321,13 +334,16 @@ Evaluate and export:
   also runs an unrelated voice-assistant stack (wakeword, whisper.cpp,
   piper, ollama) sharing its 6-core/7.4GB budget — worth accounting for once
   a real-time policy needs to run here too.
-- **The RL task's own numbers are untuned placeholders too.** Action
+- **`velocity_task.py`'s own numbers are still untuned placeholders.** Action
   `scale=5.0` (rad/s per unit policy output), the 50 Hz control rate
-  (`decimation=4` @ 5 ms physics timestep), and all reward weights in
-  `velocity_task.py` were picked by analogy to mjlab's legged-robot tasks,
-  not tuned for this robot. The 50 Hz figure in particular should be
-  replaced with the real control loop rate once known (`SIM2REAL.md` sec 6)
-  rather than left as a guess.
+  (`decimation=4` @ 5 ms physics timestep), and all reward weights were picked
+  by analogy to mjlab's legged-robot tasks, not tuned for this robot —
+  deliberately left as-is (see **Training a balance/velocity policy** above:
+  it's the fixed baseline the payload tasks are compared against, so it
+  doesn't inherit their fixes). `balance_task.py` has since moved to a
+  measured-ish 100 Hz control rate (see **Training a policy that survives a
+  changing payload**); port that change here too if this baseline is ever
+  used for more than comparison.
 - **IMU/camera are geometrically placed but not characterized.** The IMU
   site and D435 camera in `robot_constants.py` use the CAD-mounted pose
   (real, from `robot.urdf`); the camera still has a generic 42 deg vertical
