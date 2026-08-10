@@ -115,6 +115,18 @@ OBS_HISTORY_LENGTH = round(OBS_HISTORY_SECONDS * CONTROL_HZ)
 
 CONTACT_SENSOR_NAME = "chassis_contact"
 
+# False: skip the difficulty ramp entirely and train against the full "hard"
+# envelope from iteration 0 (sim_config.py's *_hard ranges, terrain always at
+# max slope/roughness -- see _terrain_cfg). User's call, made with the ramp's
+# purpose stated plainly first: a policy that has never balanced anything may
+# get little or no learnable signal against 10 kg mounted 0.6 m up on day one,
+# since most envs could fail within the first few steps of every episode. If
+# that's what happens (reward and episode length both flat near their floor
+# for a long stretch, not just noisy), it's a real signal to flip this back to
+# True rather than a smoke-test of "let it run 5000 more iterations." One flag
+# either direction -- nothing else needs touching to switch back.
+CURRICULUM_ENABLED = False
+
 
 def _terrain_cfg(domain: JavisDomainCfg, rough: bool) -> TerrainEntityCfg:
   """Flat plane, or a mix of slopes and mild roughness.
@@ -138,7 +150,14 @@ def _terrain_cfg(domain: JavisDomainCfg, rough: bool) -> TerrainEntityCfg:
       num_rows=8,
       num_cols=8,
       curriculum=True,
-      difficulty_range=(0.0, 1.0),
+      # Pinned to the hard end, not (0.0, 1.0): CURRICULUM_ENABLED=False below
+      # means nothing ever promotes a row from easy to hard, so instead every
+      # row is generated AT the hardest configured slope/roughness regardless
+      # of which one an env sits on. Row position becomes irrelevant this way
+      # (no need to also fight with max_init_terrain_level to pin envs to a
+      # specific row -- every row is now identical). Restore (0.0, 1.0) if
+      # CURRICULUM_ENABLED goes back to True.
+      difficulty_range=(1.0, 1.0),
       sub_terrains={
         "flat": BoxFlatTerrainCfg(proportion=t.flat_proportion),
         "slope": HfPyramidSlopedTerrainCfg(
@@ -158,7 +177,6 @@ def _terrain_cfg(domain: JavisDomainCfg, rough: bool) -> TerrainEntityCfg:
         ),
       },
     ),
-    max_init_terrain_level=0,
   )
 
 
@@ -410,12 +428,19 @@ def _rewards(use_pi: bool) -> dict[str, RewardTermCfg]:
 
 def _make_env_cfg(rough: bool = False, play: bool = False) -> ManagerBasedRlEnvCfg:
   domain = JavisDomainCfg()
+  # enabled=False + start_level=1.0 pins every DR range (mass/CoM/payload;
+  # terrain is pinned separately, see _terrain_cfg) at its "hard" bound from
+  # iteration 0 and disables the promote/demote logic in
+  # javis/mdp/curriculums.py entirely -- see CURRICULUM_ENABLED above.
+  curriculum_cfg = (
+    CurriculumCfg() if CURRICULUM_ENABLED else CurriculumCfg(enabled=False, start_level=1.0)
+  )
   # One registry key per task variant, so flat and rough ramp independently.
-  # Play mode pins the level at 1.0: when you are looking at a trained policy
-  # you want the full envelope, not wherever the curriculum happened to stop.
+  # Play mode pins the level at 1.0 regardless: when you are looking at a
+  # trained policy you want the full envelope, not wherever training stopped.
   difficulty = DifficultyState(
     key=f"javis_payload_{'rough' if rough else 'flat'}{'_play' if play else ''}",
-    initial=1.0 if play else CurriculumCfg().start_level,
+    initial=1.0 if play else curriculum_cfg.start_level,
   )
   if play:
     difficulty.reset(1.0)
@@ -478,12 +503,16 @@ def _make_env_cfg(rough: bool = False, play: bool = False) -> ManagerBasedRlEnvC
   curriculum: dict[str, CurriculumTermCfg] = {
     "payload_difficulty": CurriculumTermCfg(
       func=javis_curriculums.payload_difficulty,
-      params={"difficulty": difficulty, "cfg": CurriculumCfg()},
+      params={"difficulty": difficulty, "cfg": curriculum_cfg},
     ),
     "infeasible_frac": CurriculumTermCfg(func=javis_curriculums.infeasible_fraction),
     "total_mass_kg": CurriculumTermCfg(func=javis_curriculums.current_total_mass),
   }
-  if rough:
+  # terrain_levels moves individual envs between easier/harder terrain rows.
+  # With CURRICULUM_ENABLED=False every row is already pinned to max
+  # difficulty (_terrain_cfg), so which row an env sits on no longer matters
+  # -- the term would just spend cycles computing promotions with no effect.
+  if rough and CURRICULUM_ENABLED:
     curriculum["terrain_levels"] = CurriculumTermCfg(
       func=velocity_mdp.terrain_levels_vel,
       params={"command_name": "twist"},
