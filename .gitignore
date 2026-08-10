@@ -226,3 +226,6 @@ firmware_dev/
 
 # Derived from javis/assets/*.stl by javis/mass_model.py; rebuilt on demand.
 javis/assets/_mass_moments.npz
+
+# Written by MuJoCo/GLFW next to the cwd on a viewer error (e.g. no display).
+MUJOCO_LOG.TXT
