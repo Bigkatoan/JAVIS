@@ -242,48 +242,53 @@ không phải chỉ để lấy ảnh cho policy).
 - [ ] **Độ trễ pipeline camera** (capture → có data cho policy), quan trọng
       hơn với các tác vụ phản ứng nhanh.
 
-## 5b. ⚠️ Encoder "mất giao tiếp SPI" — chập chờn thật, có tài liệu xác nhận + đã giảm thiểu, CHƯA hết gốc (2026-08-06)
+## 5b. ✅ Encoder "hội tụ sai commutation" — ĐÃ TÌM RA GỐC RỄ THẬT: khe hở nam châm quá gần (2026-08-07)
 
-**Cập nhật quan trọng**: sau khi tra tài liệu cộng đồng về chính board MKS
-xDrive Mini (xem **`MKS_XDRIVE_MINI.md`**), xác nhận đây **không phải hiện
-tượng lạ/chỉ xảy ra với board của mình** — là vấn đề đã được cộng đồng ghi
-nhận: board này có lỗi hiệu chuẩn encoder không ổn định lúc khởi động
-("noise-related encoder errors during initialization"). Vẫn chưa có giải
-thích kỹ thuật sâu (EMI hay gì chính xác) từ phía MKS, nhưng đã biết đây là
-đặc điểm chung của board, không phải lỗi riêng của 2 board robot này —
-giảm bớt lo ngại rằng phần cứng bị lỗi/hỏng.
+**Cập nhật lớn (2026-08-07)**: sau nhiều tháng nghi là lỗi ngẫu nhiên/EMI
+không rõ nguyên nhân, đã **xác định được nguyên nhân gốc thật**: khoảng
+cách (air gap) giữa nam châm gắn trên trục và chip encoder AS5047P **quá
+gần (< 0.5mm)** trên cả 2 board. Từ trường tại chip bị bão hòa ở khoảng
+cách đó, khiến chip đọc ra góc sai **một cách hệ thống, lặp lại** — không
+phải hội tụ sai ngẫu nhiên như từng nghĩ. Đây là lý do hiệu chuẩn lại nhiều
+lần trước đây luôn ra cùng 1 kiểu lỗi (dòng cao ổn định ~3-9A, vận tốc≈0,
+không báo lỗi) — hiệu chuẩn không sửa được vì bản thân *tín hiệu vào* đã
+sai, không phải logic hiệu chuẩn sai.
 
-**Diễn biến quan sát trên phần cứng thật**: lỗi
-(`encoder.error=128` `ERROR_ABS_SPI_COM_FAIL`, hoặc hiệu chuẩn "thành công"
-nhưng hội tụ sai góc commutation — dòng cao, gần như không quay, không báo
-lỗi) xảy ra ở NHIỀU thời điểm khác nhau: lúc hiệu chuẩn ban đầu, lúc hiệu
-chuẩn lại, lúc vào closed-loop control — trên **cả 2 board** (không phải
-đặc thù 1 board lỗi). Đã loại trừ: kẹt cơ khí (bánh quay tay rất nhẹ), dây
-pha lỏng (kiểm tra tay, giắc chặt), config không lưu sạch. Cách khắc phục
-cộng đồng khuyến nghị (tắt `startup_encoder_offset_calibration`, tự hiệu
-chuẩn bằng phần mềm mỗi lần boot) đã áp dụng — xem `MKS_XDRIVE_MINI.md`.
+**Cách xác nhận + khắc phục**: nới khoảng cách nam châm lên **~1mm** trên
+từng board (thao tác tay, tháo lắp cơ khí) → hiệu chuẩn lại
+(`calibrate_encoder_with_retry` + `verify_and_fix_calibration`) → **cả 2
+board pass ngay lần đầu**: LEFT `vel=1.35 turn/s` (target 1.5) `Iq=0.45A`,
+RIGHT `vel=1.32 turn/s` `Iq=0.53A` — hoàn toàn bình thường, dòng thấp,
+tracking tốt. Đối chiếu trước/sau cực kỳ rõ ràng (trước: vel≈0, Iq kẹt
+3-9A trên cả 2 board dù hiệu chuẩn lại bao nhiêu lần cũng vậy).
 
-**Đã làm được** (giảm thiểu, không phải sửa gốc): `scripts/setup_odrive.py`
-giờ tự động retry khi lỗi xảy ra ở hiệu chuẩn encoder VÀ lúc vào closed-loop
-control (2 điểm đã quan sát thấy lỗi), cộng thêm bước tự kiểm tra sau hiệu
-chuẩn (`verify_and_fix_calibration`: quay thử ngắn, nếu dòng cao mà vận tốc
-thấp bất thường thì tự hiệu chuẩn lại) vì ODrive không tự báo lỗi cho kiểu
-hội tụ sai này. Test cuối chạy sạch từ đầu tới cuối không lỗi, nhưng **không
-đảm bảo sẽ luôn như vậy** — bản chất ngẫu nhiên của lỗi này nghĩa là có thể
-tái diễn bất cứ lúc nào có dòng điện thật chạy qua động cơ, kể cả lúc vận
-hành thực tế sau này, không chỉ lúc setup.
+**Vẫn còn placeholder tài liệu cộng đồng** (mục dưới, giữ lại tham khảo):
+tài liệu MKS xDrive Mini cộng đồng có nhắc tới "noise-related encoder
+errors during initialization" — không rõ có phải cùng nguyên nhân khe hở
+nam châm hay là vấn đề khác, vì tài liệu đó không nói rõ chi tiết cơ khí.
+Coi đây là 2 khả năng riêng biệt cho tới khi có thêm bằng chứng.
 
+- [x] **Nguyên nhân gốc encoder "hội tụ sai commutation"**: khe hở nam
+      châm quá gần (<0.5mm) — đã xác nhận + khắc phục 2026-08-07 bằng cách
+      nới lên ~1mm trên cả 2 board. `vel_gain`/`vel_integrator_gain` đã
+      khôi phục về giá trị kiểm chứng thật (0.3/0.2) sau khi 1 lần tuning
+      tự động trước đó bị nhiễu bởi dữ liệu từ lúc encoder còn lỗi (đã lưu
+      đè giá trị sai 0.35/0.40 — đã sửa lại).
+- [ ] **Đo lại khoảng cách chính xác tối ưu** (không chỉ "khác <0.5mm là
+      được") — 1mm mới là điểm test đầu tiên thành công, chưa quét dải để
+      tìm khoảng tối ưu/dung sai chấp nhận được. Nếu có datasheet AS5047P
+      chính thức, đối chiếu lại dải từ trường khuyến nghị (từ trí nhớ,
+      CHƯA xác nhận: khoảng 30-70mT tại chip) để tính khe hở tối ưu theo
+      đúng loại nam châm đang dùng.
 - [ ] **Việc cần làm khi viết driver ROS2/phần mềm điều khiển thật** (mục 6
-      bên dưới — hiện chưa có code nào): PHẢI có cơ chế phát hiện +
-      tự phục hồi tương tự (`verify_and_fix_calibration`, retry vào closed
-      loop) chạy MỖI LẦN robot khởi động thật, không chỉ tin
-      `startup_encoder_offset_calibration` của ODrive là đủ — và nên có
-      cảnh báo/log lại mỗi lần lỗi xảy ra trong vận hành thực tế để theo dõi
-      tần suất, giúp đánh giá xem có cần can thiệp vật lý hay không.
-- [ ] **Kiểm tra vật lý sâu hơn khi có dịp tháo máy**: khe hở/độ đồng tâm
-      nam châm encoder qua bộ bánh răng 2 tầng, và cân nhắc thử shielding/
-      tụ lọc gần chip encoder nếu nghi ngờ EMI — chưa làm được vì cần thao
-      tác vật lý trực tiếp trên board.
+      bên dưới): vẫn nên giữ cơ chế `verify_and_fix_calibration`
+      (retry + tự kiểm tra sau hiệu chuẩn) như một lớp bảo vệ, dù nguyên
+      nhân gốc đã biết — phòng trường hợp khe hở nam châm trôi lại theo
+      thời gian/rung động khi robot vận hành thật (chưa biết độ bền cơ khí
+      của việc gắn nam châm hiện tại).
+- [ ] **Cố định chắc chắn vị trí nam châm sau khi chỉnh** (keo/vít khoá) —
+      hiện tại mới chỉnh tay để test, chưa có biện pháp giữ cố định lâu
+      dài chống trôi do rung động khi robot di chuyển thật.
 
 - **Hệ quả cần nhớ**: bất kỳ log vận tốc thật nào ghi được trong lúc có
   `encoder.error != 0` đều không dùng được để calibrate
@@ -302,36 +307,58 @@ hành thực tế sau này, không chỉ lúc setup.
   5) — cần tính vào ngân sách compute khi sau này thêm policy RL chạy realtime
   trên cùng máy, không phải máy trống chỉ để lái robot.
 
-**CAN bus: đã lên (interface), nhưng CHƯA có driver nói chuyện với ODrive:**
+**✅ Quyết định giao tiếp (2026-08-07): USB, không dùng CAN.** Sau khi phát
+hiện chip transceiver CAN trên board bánh phải hỏng phần cứng (nhiều giờ
+debug, xem toàn bộ lịch sử trong `MKS_XDRIVE_MINI.md`), quyết định chuyển
+hẳn sang **USB** (native Fibre protocol, package `odrive` Python) làm giao
+tiếp chính giữa Jetson và 2 board ODrive — lý do: chỉ có 2 động cơ, lợi thế
+bus-dùng-chung của CAN không đáng để đánh đổi lấy rủi ro phần cứng đã gặp
+phải. `can0` trên Jetson vẫn UP sẵn (`can0-up.service`) nhưng không còn là
+hướng phát triển driver chính nữa — có thể bỏ qua phần CAN dưới đây trừ khi
+sau này đổi ý.
+
+- [ ] **Viết driver USB↔ODrive thật cho ROS2/phần mềm điều khiển** (chưa có
+      code nào trên Jetson) — dùng thẳng package `odrive` Python
+      (`odrive.find_any(serial_number=...)` để phân biệt 2 board theo số
+      serial USB, xem `scripts/setup_odrive.py` đã dùng đúng cách này suốt
+      phiên debug), gửi `axis0.controller.input_vel` mỗi bước điều khiển,
+      đọc `axis0.encoder.pos_estimate`/`vel_estimate` làm observation. Tái sử
+      dụng logic calibrate+verify+retry đã có trong `scripts/setup_odrive.py`
+      (xem `MKS_XDRIVE_MINI.md` mục hiệu chuẩn) — PHẢI chạy lại mỗi lần robot
+      khởi động thật.
+      ⚠️ Cần cơ chế tự phát hiện + kết nối lại nếu board rớt khỏi USB khi
+      đang vận hành (đã quan sát thấy hiện tượng này vài lần lúc debug,
+      nguyên nhân chưa rõ — có thể do enumeration chập chờn khi có nhiều
+      thiết bị USB cùng lúc, cần driver thật xử lý robust hơn script test).
+
+<details>
+<summary>Phần CAN cũ (không còn là hướng chính, giữ lại tham khảo)</summary>
+
 - `can0` **UP**, 500 kbit/s, qua CAN controller onboard của chính Jetson
   (Tegra **MTTCAN**, `c310000.mttcan` — không phải qua USB-CAN adapter rời).
   Được cấu hình tự động lúc boot bằng service riêng đã viết sẵn:
   `/etc/systemd/system/can0-up.service` (`ip link set can0 type can bitrate
   500000` + `up`).
-- `candump can0` (3s) **không thấy traffic nào** lúc kiểm tra — hợp lý vì 2
-  board ODrive hiện không cắm điện/nối vào Jetson này (đợt cấu hình trước đó
-  làm qua USB nối trực tiếp máy khác, xem `MKS_XDRIVE_MINI.md` +
-  `scripts/setup_odrive.py`).
-- **Grep toàn bộ home dir Jetson: không có bất kỳ code nào (ROS2 package,
-  script Python) nói chuyện CAN với ODrive** — xác nhận lại đúng như README
-  đã ghi "chưa có driver". Việc còn lại: viết node/script mới gửi
-  `Set_Axis_Requested_State`/`Set_Input_Vel`/đọc `Heartbeat`+`Get_Encoder_Estimates`
-  qua `can0`, tái sử dụng logic calibrate+verify+retry đã có trong
-  `scripts/setup_odrive.py` (xem `MKS_XDRIVE_MINI.md` mục hiệu chuẩn).
-- ⚠️ Chưa kiểm tra lỗi phần cứng SN65HVD230 "Listen Only" (xem
-  `MKS_XDRIVE_MINI.md`) trên đường CAN thật của Jetson này — làm việc này
-  đầu tiên khi bắt đầu viết driver, trước khi nghi ngờ lỗi phần mềm nếu gửi
-  lệnh xuống không có tác dụng.
+- Debug sâu (nhiều giờ, xem `MKS_XDRIVE_MINI.md`) xác nhận: board bánh trái
+  phát/nhận CAN hoàn toàn bình thường, board bánh phải **không bao giờ phát
+  được gì lên bus** dù config đúng 100% — cô lập được bằng cách tráo board
+  qua cùng 1 dây/cùng 1 ESP32-S3 độc lập làm bộ nghe. Đo trực tiếp tại chip
+  transceiver (VP230/SN65HVD230) trên board phải: VCC=3.3V (có nguồn), chân
+  Rs=0V (đã mod đúng), nhưng CANH/CANL không tách ra khi ép chân D xuống GND
+  — kết luận: **chip transceiver trên board phải hỏng phần cứng ở tầng lái
+  ra bus**, không phải lỗi config/dây/termination.
+
+</details>
 
 - [ ] **Tần số vòng điều khiển thật trên robot** (Jetson gửi lệnh xuống
       ODrive bao nhiêu Hz?): __________ Hz
       → phải khớp với `decimation` × `SimulationCfg.mujoco.timestep` khi
       định nghĩa RL task, để 1 bước hành động của policy trong sim tương ứng
       đúng khoảng thời gian thật trên robot.
-- [ ] **Viết driver CAN↔ODrive** (chưa có, xem phân tích ở trên) — interface
-      (đơn vị, tên biến) nên khớp 1-1 với action/observation của policy, đây
-      là phần thay thế `data.ctrl[...]`/`data.sensordata[...]` trong sim
-      bằng I/O thật.
+      (Driver USB↔ODrive ở đầu mục này là phần thay thế
+      `data.ctrl[...]`/`data.sensordata[...]` trong sim bằng I/O thật —
+      driver CAN cũ không còn cần viết nữa, xem quyết định chuyển sang USB
+      ở trên.)
 
 ## 7. Giới hạn an toàn
 

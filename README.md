@@ -169,13 +169,21 @@ closing those gaps rather than trusting an early checkpoint.
   comments, see `SIM2REAL.md` sec 5) and `orin_vslam_bringup` (RealSense
   D435 -> Isaac ROS cuVSLAM + nvblox) both run as systemd services/launch
   files — but there is no package or script anywhere on that machine talking
-  to the MKS ODrive Mini controllers. `can0` is up (500 kbit/s, via the
-  Jetson's onboard MTTCAN, `can0-up.service`) but idle — nothing has ever
-  sent a CAN frame to a wheel from this box; the ODrive setup work so far
-  (`scripts/setup_odrive.py`) was all done over USB from a separate machine.
-  This Jetson also runs an unrelated voice-assistant stack (wakeword,
-  whisper.cpp, piper, ollama) sharing its 6-core/7.4GB budget — worth
-  accounting for once a real-time policy needs to run here too.
+  to the MKS ODrive Mini controllers yet.
+  **Decided 2026-08-07: this driver will talk USB, not CAN.** `can0` is up
+  on the Jetson (`can0-up.service`) but after a long hardware debugging
+  session found the right wheel's onboard CAN transceiver chip physically
+  dead (transmit stage doesn't drive the bus at all — confirmed by process
+  of elimination against a known-good left board and direct multimeter
+  probing at the chip, see `MKS_XDRIVE_MINI.md`), the project dropped CAN as
+  the primary interface: with only 2 motors, CAN's main advantages (shared
+  bus for many nodes, hard real-time determinism) don't outweigh the
+  hardware risk already hit. USB (native Fibre protocol via the `odrive`
+  Python package, same approach `scripts/setup_odrive.py` already uses) is
+  now the plan — Jetson has enough USB ports for both boards. This Jetson
+  also runs an unrelated voice-assistant stack (wakeword, whisper.cpp,
+  piper, ollama) sharing its 6-core/7.4GB budget — worth accounting for once
+  a real-time policy needs to run here too.
 - **The RL task's own numbers are untuned placeholders too.** Action
   `scale=5.0` (rad/s per unit policy output), the 50 Hz control rate
   (`decimation=4` @ 5 ms physics timestep), and all reward weights in

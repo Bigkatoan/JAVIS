@@ -6,6 +6,33 @@ nguồn ở cuối) + kiểm chứng thực tế trên phần cứng của robot
 (2026-08-06). Đọc trước khi đụng vào `scripts/setup_odrive.py` hoặc
 `odriveconfig.txt`.
 
+## ✅ Quyết định giao tiếp (2026-08-07): dùng USB, không dùng CAN
+
+Sau nhiều giờ debug CAN bus (xem toàn bộ phần dưới) phát hiện chip
+transceiver CAN trên board bánh phải bị hỏng phần cứng — quyết định **bỏ
+CAN làm giao tiếp chính, chuyển hẳn sang USB** (native Fibre protocol qua
+package `odrive` Python, giống hệt cách `scripts/setup_odrive.py` đã dùng
+suốt từ đầu).
+
+**Lý do**: robot này chỉ có đúng 2 động cơ — lợi thế chính của CAN (bus dùng
+chung cho nhiều node, độ trễ xác định cho vòng điều khiển tần số rất cao)
+không phát huy tác dụng ở quy mô này. Jetson có đủ cổng USB để cắm trực
+tiếp cả 2 board cùng lúc. USB đã chứng minh hoạt động ổn định suốt phiên
+debug dài, trong khi CAN tốn rất nhiều thời gian vì đúng 1 lỗi phần cứng
+trên 1 board.
+
+**Rủi ro đã biết, chấp nhận**: đầu nối USB-C không bền bằng đầu vít/JST khi
+robot rung lắc lúc di chuyển thật — cần cố định dây bằng dây rút khi lắp
+đặt. Cũng từng thấy USB enumeration chập chờn trong lúc test (board rớt
+khỏi `lsusb` vài lần không rõ lý do) — cần driver ROS2/phần mềm điều khiển
+thật có cơ chế tự phát hiện + kết nối lại nếu board rớt kết nối khi vận
+hành.
+
+**Toàn bộ phần CAN bên dưới vẫn giữ lại để tham khảo** (lịch sử debug, kiến
+thức phần cứng thật vẫn đúng) — chỉ là không còn là phương án giao tiếp
+chính nữa. Có thể quay lại nếu sau này cần bus dùng chung cho nhiều thiết
+bị hơn.
+
 ## Board này thực chất là gì
 
 **MKS xDrive Mini = MKS ODrive Mini** (2 tên gọi cho cùng 1 board, thấy cả
@@ -42,7 +69,23 @@ là "ghost axis".
   Khớp với số liệu đã dùng, xác nhận đúng bởi cả tài liệu cộng đồng lẫn
   thực nghiệm.
 
-## ⚠️ Vấn đề đã biết: hiệu chuẩn encoder lúc khởi động không ổn định
+## ✅ Đã tìm ra gốc rễ (2026-08-07): khe hở nam châm-encoder quá gần
+
+Sau nhiều lần nghi là lỗi ngẫu nhiên/EMI không rõ nguyên nhân (xem phần bên
+dưới, giữ lại làm lịch sử), **đã xác nhận nguyên nhân gốc thật trên cả 2
+board robot này**: khoảng cách (air gap) giữa nam châm gắn trên trục và
+chip AS5047P **quá gần (<0.5mm)**, khiến từ trường tại chip bão hòa, đọc
+góc sai một cách hệ thống. Nới khoảng cách lên **~1mm** trên cả 2 board →
+hiệu chuẩn pass ngay lần đầu, dòng điện bình thường (<1A ở tốc độ test,
+trước đó kẹt 3-9A không quay). Xem `SIM2REAL.md` mục 5b để biết đầy đủ số
+liệu đối chiếu trước/sau.
+
+**Chưa xác định**: đây có phải đúng "vấn đề đã biết" mà tài liệu cộng đồng
+`Smurf/xdrive-mini-docs` nhắc tới bên dưới hay không (nguyên nhân họ ghi
+không đủ chi tiết) — coi 2 phần dưới đây là bối cảnh cộng đồng, còn phần
+này là kết quả kiểm chứng thật trên đúng 2 board của robot này.
+
+## ⚠️ Vấn đề đã biết theo tài liệu cộng đồng: hiệu chuẩn encoder lúc khởi động không ổn định
 
 Tài liệu cộng đồng (`Smurf/xdrive-mini-docs`) ghi nhận đây là **vấn đề đã
 biết của chính board này**: "board sẽ không tự cấu hình đúng để dùng
