@@ -3,7 +3,25 @@ name = "javis"
 version = "0.1.0"
 description = "JAVIS rover: Onshape CAD -> URDF -> mjlab simulation"
 requires-python = ">=3.10"
+# Intentionally empty: on the Jetson, `javis` is installed with
+# `pip install -e . --no-deps` into an environment whose mjlab / torch / ROS2
+# stack is already built for aarch64. Declaring them here would let pip try to
+# "fix" that.
 dependencies = []
+
+[project.optional-dependencies]
+# Workstation training and evaluation (x86_64 + CUDA). See requirements-sim.txt
+# for the exact locked versions this branch was verified against.
+sim = [
+  "mjlab==1.5.3",
+  "trimesh",
+  "matplotlib",
+  "imageio[ffmpeg]",
+  "onnx",
+  "onnxruntime",
+  "tensorboard",
+  "scipy",
+]
 
 [project.entry-points."mjlab.tasks"]
 javis = "javis.tasks"

@@ -13,8 +13,21 @@ D435 camera, an IMU, and MKS ODrive Mini wheel motor controllers.
   `.part` for onshape-to-robot's own caching).
 - `javis/robot_constants.py` — mjlab `EntityCfg` for the rover: loads
   `robot.urdf`, adds a free-floating root joint, wheel actuators, a chassis
-  collision hull, an IMU site + sensors, a D435 camera, and approximate mass
-  (see **Known gaps** below).
+  collision hull, a payload box, an IMU site + sensors, and a D435 camera.
+- `javis/mass_model.py` — per-component-group mass and inertia model. Groups
+  the 343 chassis parts by what they physically are (battery / printed PLA /
+  Jetson / camera / ODrive boards / IMU / fasteners) and precomputes each
+  group's unit-mass moments, which makes the fused body inertial exactly linear
+  in the group masses. See **Mass model** below.
+- `javis/sim_config.py` — every domain-randomization range in one editable
+  place, each with an "easy" and a "hard" value that the curriculum
+  interpolates between.
+- `javis/mdp/` — task-specific MDP terms: payload/mass randomization
+  (`events.py`), the simulated ODrive PI velocity loop (`actions.py`), balance
+  rewards that tolerate a leaning equilibrium (`rewards.py`), privileged critic
+  observations (`observations.py`), and the difficulty ramp (`curriculums.py`).
+- `javis/balance_task.py` — the payload/balance RL tasks. See **Training a
+  policy that survives a changing payload** below.
 - `scripts/view_robot.py` — builds an mjlab `Scene` (flat ground plane + the
   rover) and opens it in MuJoCo's interactive viewer.
 - `scripts/calibrate_actuator.py` — derives `WHEEL_ACTUATOR_CFG`'s
@@ -46,6 +59,20 @@ pip install -e . --no-deps  # registers the javis package + its mjlab task
 `requirements.txt` is a full freeze of the working `venv` (includes ROS2 /
 Isaac ROS packages, which also require the underlying ROS2 system install on
 a Jetson — pip alone won't reproduce those on a fresh machine).
+
+### Workstation (training / evaluation)
+
+Training runs on an x86_64 + CUDA machine, not the Jetson. `requirements.txt`
+is the aarch64 freeze and will not install there; use `requirements-sim.txt`:
+
+```bash
+uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python -r requirements-sim.txt
+uv pip install --python .venv/bin/python -e . --no-deps
+```
+
+Equivalently `pip install -e '.[sim]'` for unpinned versions. Verified on an
+RTX 3090 with mjlab 1.5.3 / mujoco 3.10.0 / torch 2.13.0+cu130.
 
 The editable install (`pip install -e .`) is what makes `javis` a real,
 importable package (`from javis.robot_constants import ...`) and, via the
@@ -116,31 +143,106 @@ module docstring for the full reasoning, including why actions are wheel
 *velocity* targets (matching the real ODrive's velocity-mode control) rather
 than the torque actions a sim-only balance task would normally use.
 
-Verified end-to-end (env builds, steps, and trains without NaNs/crashes;
-reward increases within the first few PPO iterations of a smoke test) but
-**not yet trained to convergence or tried on hardware** — every numeric gap
-in the section below (mass, actuator gains, friction) feeds directly into
-this task's dynamics, so revisit `--agent.max-iterations` results after
-closing those gaps rather than trusting an early checkpoint.
+Kept as the fixed-mass baseline to compare the payload tasks against. Verified
+end-to-end (builds, steps, trains without NaNs) but never trained to
+convergence or run on hardware.
+
+## Mass model
+
+`robot.urdf` has no usable mass data — no materials are assigned in the Onshape
+assembly, so every link exports `mass="1e-9"`. `javis/mass_model.py` supplies it
+instead, and does so per component group rather than as one averaged number,
+because the battery is 39% of chassis mesh volume at ~5x the density of the
+printed structure around it. Averaging puts the centre of mass in the wrong
+place, and for a two-wheel balancing robot the centre of mass *is* the problem.
+
+| group | volume | mass | source |
+|---|---|---|---|
+| `battery` | 1683 cm³ | 3.423 kg | weighed 2026-08-06 |
+| `printed` | 2439 cm³ | 1.000 kg | one 1 kg PLA spool at ~15% infill → 0.41 g/cm³ |
+| `jetson` | 70 cm³ | 0.176 kg | Orin Nano devkit catalog weight |
+| `camera` | 36 cm³ | 0.072 kg | D435 datasheet |
+| `odrive` | 22 cm³ | 0.070 kg | 2 × MKS xDrive Mini, estimated — not weighed |
+| `imu` | 1 cm³ | 0.005 kg | BMX160 + BMP388 breakout |
+| `hardware` | 19 cm³ | 0.148 kg | steel at 7.85 g/cm³ (checks out against a 6808-2RS catalog weight) |
+| `electronics_misc` | 24 cm³ | 0.073 kg | connectors/capacitors at an assumed 3.0 g/cm³ |
+| `wiring_misc` | — | 0.300 kg | harness and oddments, not in CAD, randomized 0–1 kg |
+| each wheel | 1416 cm³ | 2.936 kg | weighed 2026-08-06 |
+
+Chassis 5.27 kg, whole robot **11.14 kg**, CoM 0.2875 m above the floor and
+1.4 mm off the axle fore/aft. Two things corroborate it: 1 kg of PLA over
+2439 cm³ implies 0.41 g/cm³, which is what ~15% infill plus perimeters gives;
+and the model reproduces the 0.01205 kg·m² wheel spin inertia that was measured
+independently for the actuator calibration.
+
+```bash
+.venv/bin/python scripts/inspect_mass.py --check-model   # budget + balance envelope
+.venv/bin/python scripts/verify_mass_model.py            # 32 independent checks
+.venv/bin/python scripts/view_robot.py --color-by-group  # confirm mesh→group by eye
+```
+
+Because mass properties are linear in the group masses, `mass_model.fuse()`
+produces an exact `(mass, ipos, iquat, inertia)` for any configuration with a
+couple of batched matmuls — which is what lets every environment carry its own
+physically consistent build with no MjSpec recompile.
+
+## Training a policy that survives a changing payload
+
+```bash
+.venv/bin/train Javis-Payload-Flat  --agent.logger tensorboard
+.venv/bin/train Javis-Payload-Rough --agent.logger tensorboard
+.venv/bin/play  Javis-Payload-Flat --checkpoint-file logs/rsl_rl/javis_payload_flat/<run>/model_<n>.pt
+```
+
+`javis/balance_task.py` keeps the twist-tracking objective but randomizes what
+the robot *is*: chassis 3–15 kg, payload 0–10 kg mounted anywhere from 5 to
+60 cm up and ±12 cm off-axis, per-wheel mass and friction drawn separately, and
+the payload swapped mid-episode. The policy is never told any of it — the actor
+sees 12 frames (0.24 s) of the same IMU / encoder / command data the real robot
+publishes and has to infer the load from how the robot responds. The critic is
+told, which costs nothing at deployment and keeps value estimation sane.
+
+A curriculum widens the ranges as mean episode length improves, because
+starting at the full envelope produces no learnable episodes at all.
+
+Evaluate and export:
+
+```bash
+.venv/bin/python scripts/eval_payload_sweep.py   --checkpoint <ckpt>  # CSV + heatmaps
+.venv/bin/python scripts/record_payload_video.py --checkpoint <ckpt>  # mp4
+.venv/bin/python scripts/export_onnx.py          --checkpoint <ckpt>  # ONNX + I/O contract
+```
 
 ## Simulation notes / known gaps
 
-- **Wheel mass is real, chassis mass is still a placeholder.** No material
-  densities are assigned in the Onshape assembly, so `robot.urdf` exports
-  `mass="1e-9"` for every link. `robot_constants.py` works around this with
-  `_set_mass_from_density`, which scales each body's geom density so
-  MuJoCo's own inertiafromgeom-computed mass hits a per-body target — not a
-  single whole-robot total, so a known wheel mass can't skew the chassis or
-  vice versa. `WHEEL_MASS_KG = 2.936` kg is a real measurement (per wheel).
-  `CHASSIS_MASS_KG = 6.0` kg is still a guess (known lower bound: the
-  battery alone, one part among ~343 fused into that link, is a confirmed
-  3.423 kg). See `SIM2REAL.md` sec 1 for what's still needed (full robot
-  total, remaining component masses) to replace it.
-- **Wheel actuator gains are placeholders** until calibrated with
-  `scripts/calibrate_actuator.py` (see above) against real datasheet numbers
-  or a logged step response. For a more faithful drivetrain model than the
-  plain `BuiltinVelocityActuatorCfg` used now, see
-  `mjlab.actuator.BuiltinDcMotorActuatorCfg`.
+- **The ODrive velocity gains on the hardware cannot balance this robot.**
+  Found in simulation, and it is a hardware conclusion, not a sim artifact.
+  `vel_gain = 0.25 N·m/(turn/s)` against a 0.0122 kg·m² wheel is a velocity-loop
+  time constant of 307 ms, while the robot's own fall time constant is
+  `sqrt(h/g)` = 171 ms — the inner loop is slower than the thing it is supposed
+  to stabilize. It needs roughly 15× more gain (`vel_gain ≈ 3.8`, i.e. a ~20 ms
+  loop) before a balance controller of any kind can work. Note
+  `scripts/tune_wheel_pid.py` sweeps only 0.15–0.40, tuned on a free-spinning
+  wheel where soft gains are fine. `javis/sim_config.py` defaults to the
+  retuned values and records the configured ones alongside; `SIM2REAL.md` sec 3
+  tracks the change.
+- **Component masses are known to varying degrees.** Battery and wheels are
+  weighed; Jetson and camera are catalog figures; the MKS boards, IMU and
+  fastener totals are estimates. Each group's domain-randomization range in
+  `javis/sim_config.py` is set to reflect how well it is actually known, so
+  weighing something later means narrowing one range rather than discovering a
+  systematic error. `SIM2REAL.md` sec 1 lists what is still worth weighing.
+- **Two drivetrain models exist; the payload tasks use the faithful one.**
+  `Javis-Velocity-Flat` still uses mjlab's `BuiltinVelocityActuatorCfg`, which
+  is proportional only. The real ODrive runs P **plus I**, and that integral
+  term is exactly what absorbs an unknown load — omit it and the policy learns
+  to do that job itself, then double-compensates against the real board and
+  oscillates. `javis/mdp/actions.py` therefore simulates the board's PI loop
+  explicitly (torque actuator + anti-windup + the board's velocity ramp), with
+  `DrivetrainCfg.use_pi_actuator = False` to A/B against the builtin.
+  `effort_limit` is grounded (Kt 0.207 N·m/A × 15 A); the fitted `damping`
+  0.028 was a control gain, not physical drag, so physical wheel drag is now a
+  separate randomized `joint_damping` term spanning 0 to that figure.
 - **Chassis collision is a convex hull, not the exact shape.** The chassis
   carries 343 raw, non-convex CAD meshes (screws, gears, connectors...),
   visual-only and unfit for realtime contact, so `robot_constants.py` wraps
@@ -151,17 +253,24 @@ closing those gaps rather than trusting an early checkpoint.
   slots, the gap between the wide base and the narrower camera/Jetson
   tower). Replace with a multi-part convex decomposition (e.g. CoACD/V-HACD)
   if that precision matters.
+- **The balance envelope is a hard limit, and heavy builds sit close to it.**
+  Ground force is capped at `2·τ_max/r` = 63.4 N, so the steepest lean the
+  motors can hold is `atan(63.4/(M·g))`: 30° at the nominal 11.1 kg, 18° at
+  20 kg, 12° at 30 kg. On a 10° slope a 30 kg robot spends almost its entire
+  budget just holding station. The requested randomization envelope reaches
+  past that, so `sim_config.FeasibilityCfg` resamples configurations that are
+  provably impossible rather than spending gradient on them, and
+  `scripts/eval_payload_sweep.py` draws the boundary on its heatmaps. Set
+  `enabled=False` to train on the raw envelope instead.
 - **The rover is only stable on its own 2 wheels with a correct center of
   mass.** Two coaxial wheels and nothing else touching the ground is a
-  Segway-style balancing configuration, not a tripod-stable base. Even with
-  real wheel mass now in place (2.936 kg each, well above the still-guessed
-  6 kg chassis), dropping the rover in sim from resting height still pitches
-  it over ~90 deg onto its face instead of standing — verified with
-  `scripts/view_robot.py`. This is no longer just a "mass is fake" artifact,
-  so treat it as a real finding: this robot needs an active balance
-  controller (a natural first `mjlab` RL task, see `javis/velocity_task.py`)
-  rather than passive stability, unless the physical robot has a
-  kickstand/tail contact point not yet in the URDF (`SIM2REAL.md` sec 2).
+  Segway-style balancing configuration, not a tripod-stable base. Dropping the
+  rover in sim from resting height pitches it over ~90 deg onto its face
+  instead of standing — verified with `scripts/view_robot.py`. This is a real
+  finding, not a mass artifact: this robot needs an active balance controller
+  (`javis/balance_task.py`) rather than passive stability, unless the physical
+  robot has a kickstand/tail contact point not yet in the URDF
+  (`SIM2REAL.md` sec 2).
 - **No ROS2 package / motor driver code.** Confirmed by inspecting the actual
   onboard Jetson Orin Nano (2026-08-06): ROS2 Humble + Isaac ROS are
   installed and already drive the sensor stack — `bmx160_bmp388_driver`
@@ -193,10 +302,16 @@ closing those gaps rather than trusting an early checkpoint.
   rather than left as a guess.
 - **IMU/camera are geometrically placed but not characterized.** The IMU
   site and D435 camera in `robot_constants.py` use the CAD-mounted pose
-  (real, from `robot.urdf`) but noiseless, zero-latency sensor models and a
-  generic 42 deg vertical FOV guess for the camera — not the real D435's
-  factory-calibrated intrinsics or the IMU's real noise/bias. See
-  `SIM2REAL.md`.
+  (real, from `robot.urdf`); the camera still has a generic 42 deg vertical
+  FOV guess rather than the D435's factory intrinsics. The payload tasks do
+  add IMU noise and a randomized 1–3 control-step observation delay, but those
+  bounds are guesses too — the real BMX160 noise density and the real
+  sensor-to-policy latency are both still unmeasured (`SIM2REAL.md` sec 5, 6).
+- **`base_lin_vel` assumes the VSLAM stack is up.** The actor observes linear
+  velocity, which the BMX160 cannot provide directly — on hardware it has to
+  come from the Isaac ROS cuVSLAM odometry already running on the Jetson. If
+  that pipeline drops out, the policy loses an observation it was trained on.
+  Worth deciding whether to train a variant without it before deployment.
 
 ## Sim-to-real
 
