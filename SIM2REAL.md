@@ -13,20 +13,40 @@ tôi sẽ cập nhật vào `robot_constants.py`. Đánh dấu `[x]` khi đã đ
 
 ## 1. Khối lượng & trọng tâm
 
-Đây là nhóm quan trọng nhất — kết quả mô phỏng hiện tại (robot 2 bánh bị đổ
-khi thả tự do, xem README mục "known gaps") là do khối lượng đang được ước
-lượng theo *thể tích* mesh CAD (giả định mật độ đều), không phải khối lượng
-thật, nên trọng tâm tính ra gần chắc chắn sai.
+**✅ Cập nhật 2026-08-10: đã thay mô hình khối lượng.** Không còn dùng một mật
+độ đồng đều cho cả 343 part nữa (cách cũ làm trọng tâm sai, vì pin chiếm 39%
+thể tích thân nhưng nặng gấp ~5 lần nhựa in quanh nó). `javis/mass_model.py`
+giờ chia thân xe thành các **nhóm linh kiện** và gán khối lượng riêng cho từng
+nhóm; thể tích lấy trực tiếp từ mesh STL.
+
+| nhóm | thể tích | khối lượng | nguồn |
+|---|---|---|---|
+| `battery` | 1683 cm³ | 3.423 kg | cân thật 2026-08-06 |
+| `printed` | 2439 cm³ | 1.000 kg | 1 cuộn PLA, infill ~15% → 0.41 g/cm³ |
+| `jetson` | 70 cm³ | 0.176 kg | catalog Orin Nano devkit |
+| `camera` | 36 cm³ | 0.072 kg | datasheet D435 |
+| `odrive` | 22 cm³ | 0.070 kg | 2 board MKS, **ước lượng — chưa cân** |
+| `imu` | 1 cm³ | 0.005 kg | breakout BMX160 + BMP388 |
+| `hardware` | 19 cm³ | 0.148 kg | thép 7.85 g/cm³ |
+| `electronics_misc` | 24 cm³ | 0.073 kg | giả định 3.0 g/cm³ |
+| `wiring_misc` | — | 0.300 kg | dây + lặt vặt, không có trong CAD, DR 0–1 kg |
+| mỗi bánh | 1416 cm³ | 2.936 kg | cân thật 2026-08-06 |
+
+→ thân **5.27 kg**, cả xe **11.14 kg**, CoM cao **0.2875 m** so với mặt đất,
+lệch trước-sau chỉ **+1.4 mm**. Kiểm chứng chéo: 1 kg PLA / 2439 cm³ =
+0.41 g/cm³, đúng tầm 15% infill + vỏ; và mô hình tái tạo lại đúng quán tính
+bánh 0.01205 kg·m² đã đo độc lập khi hiệu chuẩn actuator.
+
+Xem `scripts/inspect_mass.py` và `scripts/verify_mass_model.py` (32 phép kiểm
+tra độc lập, gồm cả đối chiếu brute-force từng mesh và đối chiếu với MuJoCo).
 
 - [ ] **Tổng khối lượng robot đã lắp ráp hoàn chỉnh** (kg): __________
-      → vẫn cần, để đối chiếu/kiểm tra lại `CHASSIS_MASS_KG` (
-      `javis/robot_constants.py`) một khi biết đủ: tổng thật ≈
-      `CHASSIS_MASS_KG` + 2 × 2.936 (khối lượng bánh, đã đo).
+      → để đối chiếu con số tính ra ở trên (11.14 kg). Đây là phép kiểm tra
+      giá trị nhất còn lại: lệch nhiều nghĩa là một nhóm nào đó sai hẳn.
 - [x] **Khối lượng từng bánh xe**: đo 2026-08-06, mỗi bánh **2936 g**
-      (giả định 2 bánh bằng nhau — báo lại nếu khác). Đã cập nhật thành
-      `WHEEL_MASS_KG` riêng trong `robot_constants.py`, tách hẳn khỏi khối
-      lượng thân (không còn dùng `settotalmass` chia theo thể tích chung
-      như trước).
+      (giả định 2 bánh bằng nhau — báo lại nếu khác). Trong sim mỗi bánh được
+      random ±10% **độc lập nhau**, vì 2 hub motor không bao giờ giống hệt và
+      chênh lệch đó gây nhiễu yaw thật.
 - [ ] **Vị trí trọng tâm (CoM) của toàn robot**, đo bằng 1 trong 2 cách:
   - Cách đơn giản: đặt robot lên 2 điểm tựa cân riêng (VD 2 cân nhỏ dưới 2
     bánh, hoặc dưới đáy trước/sau nếu có chân chống) → tính CoM dọc trục X
@@ -37,16 +57,20 @@ thật, nên trọng tâm tính ra gần chắc chắn sai.
     nhau để ra tọa độ 3D.
     Kết quả (x,y,z so với gốc `body` — xem `robot.urdf`, gốc `body` nằm ở
     khoảng tâm trục bánh): __________
-- [ ] **Khối lượng các cụm linh kiện nặng** (giúp đối chiếu/tinh chỉnh
-      `CHASSIS_MASS_KG` — hiện chỉ là 1 số tổng đoán 6.0kg cho toàn bộ 343
-      part gộp trong link `body`, biết thêm phân bố sẽ giúp trọng tâm đúng
-      hơn, quan trọng vì robot đang bị đổ trong mô phỏng):
+- [ ] **Cân lại các nhóm đang là ước lượng.** Mỗi nhóm trong bảng trên có một
+      dải domain randomization riêng trong `javis/sim_config.py`, đặt theo mức
+      độ *thật sự biết* con số đó. Cân được cái nào thì thu hẹp dải cái đó —
+      không phải sửa một sai số hệ thống.
   - [x] Pin: **3423 g**. Đo 2026-08-06. Vị trí lắp: __________
-  - [ ] Cụm Jetson + giá đỡ: __________ kg
-  - [ ] Camera D435: __________ kg
-  - [ ] Board(s) MKS ODrive Mini — **cho biết thực tế có bao nhiêu board**
-    (mesh CAD lặp tên 7 lần, nghi là 1-2 board thật được tham chiếu nhiều
-    lần): số lượng thật: __________, khối lượng mỗi board: __________ kg
+  - [ ] Cụm Jetson + giá đỡ: __________ kg (đang dùng catalog 176 g, DR ±20%)
+  - [ ] Camera D435: __________ kg (đang dùng datasheet 72 g, DR ±20%)
+  - [ ] Board(s) MKS ODrive Mini — **ưu tiên cao nhất trong nhóm này**: hoàn
+    toàn chưa cân, các listing chỉ ghi khối lượng đóng gói. Đang giả định
+    2 board × 35 g, DR ±40%. Số lượng thật: __________, mỗi board: ______ kg
+  - [ ] Xác nhận bằng mắt mesh nào thuộc nhóm nào:
+    `.venv/bin/python scripts/view_robot.py --color-by-group`. Riêng
+    `main_board_simplified.stl` + `module_board_me*.stl` đang được **suy đoán**
+    là cụm Jetson dựa vào thể tích (70 cm³), tên trong CAD không nói rõ.
   - [x] Cụm hộp số + bánh răng: không phải bộ truyền lực — xác nhận
     2026-08-06 đây là cơ cấu dời nam châm encoder lên board MKS ODrive Mini
     (xem mục 3), khối lượng của nó vẫn tính trong link `body` như bình
@@ -84,6 +108,39 @@ thật, nên trọng tâm tính ra gần chắc chắn sai.
 > thức về chính con board đang dùng (ghost axis1, lỗi CAN transceiver, cảnh
 > báo brick firmware, vấn đề hiệu chuẩn encoder lúc boot...), nguồn từ tài
 > liệu cộng đồng + kiểm chứng thực tế. Mục này chỉ còn checklist đo đạc.
+
+### 🔴 ƯU TIÊN CAO NHẤT: gain vòng vận tốc hiện tại KHÔNG cân bằng nổi robot
+
+Phát hiện từ mô phỏng 2026-08-10, nhưng đây là **kết luận về phần cứng**, không
+phải lỗi sim:
+
+- Board đang để `vel_gain = 0.25 N·m/(turn/s)` = 0.0398 N·m/(rad/s).
+- Quán tính bánh (từ `mass_model`) J = 0.0122 kg·m².
+- → hằng số thời gian vòng vận tốc = J/kp = **307 ms**.
+- Trong khi hằng số thời gian đổ của chính con robot = √(h/g) với h = 0.2875 m
+  → **171 ms**.
+
+**Vòng trong chậm hơn cái mà nó phải ổn định.** Không có bộ điều khiển cân bằng
+nào — RL hay LQR hay MPC — làm việc được qua một vòng vận tốc như vậy: bánh còn
+đang trên đường đạt tốc độ đặt thì robot đã ngã xong. Riêng khâu tích phân cũng
+không cứu được: `vel_integrator_gain = 0.15` cần ~4 s để tích đủ momen giữ một
+góc nghiêng 5°.
+
+- [ ] **Tăng `vel_gain` lên ~15× giá trị hiện tại.** Mục tiêu vòng vận tốc
+      ~20 ms → kp = J/τ = 0.61 N·m/(rad/s) → **`vel_gain ≈ 3.8`**. Kèm theo
+      `vel_integrator_gain ≈ 19` (theo quy tắc ODrive:
+      `0.5 × bandwidth × vel_gain`, bandwidth 10 Hz).
+      Giá trị đo được sau khi tune: vel_gain ______, vel_integrator_gain ______
+      ⚠️ Tăng gain 15× trên robot thật thì **kê chân đế/treo bánh lên trước**,
+      và giảm `current_lim` tạm thời — gain cao + encoder noise = rung mạnh.
+- [ ] **Mở rộng dải quét của `scripts/tune_wheel_pid.py`.** Hiện chỉ quét
+      0.15–0.40, và quét trên bánh **quay tự do** — ở chế độ đó gain thấp cho
+      kết quả đẹp nhất nên bộ quét sẽ luôn chọn sai cho bài toán cân bằng.
+      Cần quét lại 1.0–6.0 với bánh đang chịu tải thật.
+- Sim hiện đã dùng thẳng giá trị *cần tune tới* (`javis/sim_config.py`,
+  `DrivetrainCfg.kp_nm_per_rad_s = 0.61`), và ghi lại giá trị đang cấu hình
+  trong `kp_as_configured` để đối chiếu. DR ±40% quanh đó, vì đây là mục tiêu
+  chứ chưa phải số đo.
 
 - [x] **Board thật chỉ dùng 1 axis/board** (`axis0`, `axis1` là "ghost" —
       không có động cơ thật). Robot dùng 2 board riêng, mỗi board 1 bánh —
@@ -137,15 +194,17 @@ thật, nên trọng tâm tính ra gần chắc chắn sai.
       trạng thái ổn định (không chỉ đoạn đầu tăng tốc), có ít nhất 1 mức đủ
       lớn để dòng bão hoà ở `current_lim` (giúp xác định `effort_limit`
       đáng tin hơn). Chạy lại `scripts/calibrate_actuator.py fit`.
-- [ ] **Tune lại `vel_gain`/`vel_integrator_gain` trên ODrive thật** — đang
-      để `vel_gain=0.02` (số mẫu cũ, chưa tune), theo `damping=0.028` vừa
-      fit thì gain tương đương lý thuyết cho vòng vận tốc ODrive rơi vào
-      khoảng `0.028 × 2π / 0.207 ≈ 0.85 A/(turn/s)` — cao hơn nhiều so với
-      0.02 hiện tại, khớp với việc phản hồi thực đo được khá "mềm"/chậm
-      (0.2s chỉ lên được ~10/31.4 rad/s mục tiêu). Đây là điểm khởi đầu để
-      thử, không phải giá trị an toàn đảm bảo — tăng dần thực nghiệm trên
-      robot thật (tăng tới khi hơi dao động rồi lùi lại ~30-50%), **không
-      tự áp trực tiếp** vì có thể gây dao động nếu tăng đột ngột.
+- [ ] **Tune lại `vel_gain`/`vel_integrator_gain` trên ODrive thật** — xem ô
+      🔴 đầu mục 3. Board đang ở `vel_gain = 0.25` (không phải 0.02 như ghi chú
+      cũ ở đây; `scripts/setup_odrive.py` và bản dump USB đều xác nhận 0.25).
+      Mục tiêu ~3.8. Tăng dần trên robot thật (tăng tới khi hơi dao động rồi
+      lùi lại 30-50%), **không áp thẳng một phát** — gain gấp 15× mà đặt đột
+      ngột thì gần như chắc chắn dao động.
+      Ghi chú: `damping = 0.028` fit được từ log 0.2s là một **gain điều khiển**
+      xấp xỉ vòng kín cũ, không phải ma sát vật lý của bánh. Sim giờ tách hai
+      thứ này: PI loop mô phỏng riêng (`javis/mdp/actions.py`), còn ma sát nhớt
+      vật lý của bánh là một `joint_damping` riêng, chưa đo, đang DR trong dải
+      0–0.03 N·m/(rad/s).
 - [ ] **Độ trễ giao tiếp** (communication/bus latency) giữa lệnh gửi đi và
       lúc động cơ thực sự phản hồi (VD qua CAN bus — thấy
       `odrv0.can.set_baud_rate(500000)` trong config mẫu). Đo bằng cách so

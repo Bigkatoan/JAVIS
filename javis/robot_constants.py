@@ -11,16 +11,19 @@ changes -- no separate MJCF is checked in, the URDF is converted on the fly.
 """
 
 import re
+import tempfile
 from pathlib import Path
 
 import mujoco
 import numpy as np
 import trimesh
 
-from mjlab.actuator import BuiltinVelocityActuatorCfg
+from mjlab.actuator import BuiltinMotorActuatorCfg, BuiltinVelocityActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.sensor import CameraSensorCfg
 from mjlab.utils.spec_config import CameraCfg, CollisionCfg
+
+from . import mass_model
 
 ##
 # URDF source.
@@ -32,8 +35,17 @@ assert JAVIS_URDF.exists()
 
 WHEEL_JOINTS = ("left_wheel", "right_wheel")
 WHEEL_COLLISION_GEOMS = ("wheel_collision", "wheel_2_collision")
+WHEEL_BODIES = ("wheel", "wheel_2")
 CHASSIS_BODY_NAME = "body"
 CHASSIS_COLLISION_GEOM = "chassis_collision"
+PAYLOAD_GEOM = "payload"
+
+# Measured from assets/wheel.stl bounds. Used for the analytic balance envelope
+# (scripts/inspect_mass.py) and for converting wheel torque to ground force.
+WHEEL_RADIUS_M = 0.098
+# Half the wheel track, from robot.urdf's left/right wheel joint origins
+# (y = -+0.129). The lateral limit for the CoM before one wheel unloads.
+WHEEL_HALF_TRACK_M = 0.129
 
 
 def _quat_to_mat(quat: tuple[float, float, float, float]) -> np.ndarray:
@@ -74,66 +86,42 @@ def _chassis_point_cloud(
   return np.concatenate(points, axis=0)
 
 
-_CALIBRATION_DENSITY = 1000.0
+def _apply_mass_model(spec: mujoco.MjSpec) -> None:
+  """Write explicit inertial properties onto each body from javis.mass_model.
 
+  Supersedes the old uniform-density approach (one density across all 343
+  chassis parts, scaled to hit a guessed total). That produced the right total
+  but the wrong center of mass, because the battery is 39% of chassis mesh
+  volume at ~5x the density of the printed structure around it -- and CoM is
+  precisely what a two-wheel balancing robot is sensitive to. See
+  javis/mass_model.py for the per-component-group model that replaces it.
 
-def _default_density_body_masses() -> dict[str, float]:
-  """What would body_mass be for "body"/"wheel"/"wheel_2" if every mesh geom
-  had a uniform density of _CALIBRATION_DENSITY? Used to scale each body's
-  real geom density to hit a real target mass (see _set_mass_from_density).
-
-  Computed from a throwaway MjSpec parsed fresh from robot.urdf, independent
-  of the main spec get_spec() builds. Needed because get_spec()'s spec has
-  a freejoint added to "body" (chassis) already, and a fresh raw URDF parse
-  doesn't -- and a body with no joint at all is, by default, silently fused
-  into "world" at compile time (`compiler.fusestatic`), which drops it from
-  the compiled model as a separate named body. mj_name2id() then can't find
-  "body", returns -1, and model.body_mass[-1] silently wraps around to
-  whatever the *last* body happens to be (wheel_2) instead of raising --
-  disabling fusestatic here avoids that trap.
+  Every mesh geom gets density=0 and the bodies carry explicit inertials, so
+  MuJoCo does no inertia computation of its own here. mass_model's numbers are
+  the single source of truth, in sim and in the per-environment randomization
+  in javis/mdp/events.py alike.
   """
-  urdf_text = JAVIS_URDF.read_text()
-  fixed_urdf = re.sub(r"package://assets/", "assets/", urdf_text)
-  tmp_urdf = JAVIS_DIR / "_javis_calib_tmp.urdf"
-  tmp_urdf.write_text(fixed_urdf)
-  try:
-    calib_spec = mujoco.MjSpec.from_file(str(tmp_urdf))
-  finally:
-    tmp_urdf.unlink()
+  # AUTO (not FALSE): bodies we don't set explicitly still fall back to the
+  # geom-derived path instead of erroring out at compile time.
+  spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
-  for g in calib_spec.geoms:
-    if g.type == mujoco.mjtGeom.mjGEOM_MESH:
-      g.density = _CALIBRATION_DENSITY
-  calib_spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_TRUE
-  calib_spec.compiler.fusestatic = False
-  model = calib_spec.compile()
+  for geom in spec.geoms:
+    if geom.type == mujoco.mjtGeom.mjGEOM_MESH:
+      geom.density = 0.0
 
-  return {
-    name: model.body_mass[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)]
-    for name in ("body", "wheel", "wheel_2")
-  }
-
-
-def _set_mass_from_density(
-  body: mujoco.MjsBody,
-  target_mass_kg: float,
-  mass_at_calibration_density: float,
-  exclude_geom_names: tuple[str, ...] = (),
-) -> None:
-  """Set a uniform geom density on `body`'s mesh geoms so that
-  mjINERTIAFROMGEOM_TRUE-computed mass comes out to exactly target_mass_kg,
-  while still deriving the inertia *shape* from the real geometry rather
-  than treating the body as a point mass. Geoms in exclude_geom_names (e.g.
-  a density=0 collision hull) are left untouched.
-
-  `mass_at_calibration_density` comes from _default_density_body_masses()
-  -- see that function's docstring for why this doesn't compile `body`'s
-  own spec itself to get it.
-  """
-  scale = target_mass_kg / mass_at_calibration_density
-  for g in body.geoms:
-    if g.type == mujoco.mjtGeom.mjGEOM_MESH and g.name not in exclude_geom_names:
-      g.density = _CALIBRATION_DENSITY * scale
+  for body_name in (CHASSIS_BODY_NAME, *WHEEL_BODIES):
+    body = next(b for b in spec.bodies if b.name == body_name)
+    mass, com, iquat, inertia = mass_model.fuse_nominal(body_name)
+    body.mass = mass
+    body.ipos = com.tolist()
+    # The URDF importer fills fullinertia from the <inertial> block, and MuJoCo
+    # rejects a body that specifies both that and a diagonal inertia. NaN in
+    # slot 0 is how MjSpec marks fullinertia as unset (its own default), so
+    # restoring that hands the diagonal + iquat pair below sole ownership.
+    body.fullinertia = [float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0]
+    body.iquat = iquat.tolist()
+    body.inertia = inertia.tolist()
+    body.explicitinertial = True
 
 
 def _add_chassis_collision_hull(
@@ -156,9 +144,9 @@ def _add_chassis_collision_hull(
   Passing only vertices (no faces) to MjSpec.add_mesh makes MuJoCo compute
   the convex hull itself at compile time.
 
-  density=0 on the resulting geom so it contributes no mass/volume to the
-  inertiafromgeom computation in get_spec() -- it would otherwise double up
-  with the visual meshes it wraps and skew the chassis/wheel mass split.
+  density=0 on the resulting geom, harmless now that _apply_mass_model writes
+  explicit inertials (geom density no longer feeds inertia at all), but kept so
+  the geom stays inert if that ever changes back.
   """
   points = _chassis_point_cloud(spec, chassis, mesh_cache)
   hull_verts = trimesh.Trimesh(vertices=points).convex_hull.vertices
@@ -172,6 +160,39 @@ def _add_chassis_collision_hull(
     rgba=[1, 0, 0, 0],  # invisible; the detailed chassis meshes are the visual layer
     contype=0,
     conaffinity=0,  # enabled by ROBOT_COLLISION below; disabled here as a safe default
+  )
+
+
+# Payload defaults. Both are placeholders overwritten per-environment by
+# javis/mdp/events.py (dr.geom_pos / dr.geom_size); they only decide what a
+# plain, un-randomized scene shows.
+PAYLOAD_DEFAULT_POS = (0.0, 0.0, 0.30)
+PAYLOAD_DEFAULT_HALF_EXTENTS = (0.06, 0.06, 0.06)
+
+
+def _add_payload_geom(chassis: mujoco.MjsBody) -> None:
+  """Add the visible box standing in for whatever the robot is carrying.
+
+  The payload's *mass* does not come from this geom -- it is a term in
+  javis.mass_model's group vector, folded into the chassis's explicit inertial
+  along with everything else, so mass, CoM and inertia stay mutually consistent
+  when it changes. The geom is here purely so the load is (a) visible in the
+  viewer and recorded videos and (b) has a pose that `dr.geom_pos` can
+  randomize, which is then read back as the point-mass position.
+
+  Non-colliding on purpose (contype/conaffinity 0): it is a mass proxy, not an
+  obstacle. Giving it contact would make it collide with the chassis hull that
+  already wraps the same volume.
+  """
+  chassis.add_geom(
+    name=PAYLOAD_GEOM,
+    type=mujoco.mjtGeom.mjGEOM_BOX,
+    size=list(PAYLOAD_DEFAULT_HALF_EXTENTS),
+    pos=list(PAYLOAD_DEFAULT_POS),
+    density=0,
+    rgba=[0.9, 0.45, 0.1, 0.65],
+    contype=0,
+    conaffinity=0,
   )
 
 
@@ -239,44 +260,32 @@ D435_FOVY_DEG = 42.0
 
 # robot.urdf has no real mass/inertia (onshape-to-robot exported 1e-9
 # placeholders because no material densities are assigned in the Onshape
-# assembly yet). get_spec() recomputes inertia from geometry and scales each
-# body's geom density to hit these per-body mass targets -- see
-# _set_mass_from_density -- instead of one global total (which would let an
-# unknown chassis mass distort the now-known wheel mass, or vice versa).
-
-# Measured 2026-08-06 (see SIM2REAL.md sec 1): each wheel (hub motor +
-# tire assembly) weighs 2936 g. Assumed equal for both wheels -- flag if
-# the real robot's two wheels differ.
-WHEEL_MASS_KG = 2.936
-
-# Still an unmeasured placeholder. Known lower bound: the battery alone
-# (one of ~343 parts fused into this single "body" link) is confirmed at
-# 3423 g (SIM2REAL.md sec 1) -- everything else (frame, Jetson, camera,
-# ODrive boards, screws...) adds more on top of that, so this number is
-# almost certainly too low. Replace once the remaining components in
-# SIM2REAL.md sec 1 are weighed (or once Onshape has real material
-# densities assigned, making this whole density-scaling workaround
-# unnecessary).
-CHASSIS_MASS_KG = 6.0
+# assembly yet). get_spec() therefore writes explicit inertials from
+# javis/mass_model.py, which models the chassis as named component groups
+# (battery / printed PLA / Jetson / camera / ODrive / IMU / fasteners) rather
+# than one averaged blob -- see _apply_mass_model above and mass_model's module
+# docstring for why the averaged version put the CoM in the wrong place.
 
 
 def get_spec() -> mujoco.MjSpec:
   """Load robot.urdf as an MjSpec, resolving package:// mesh URIs, naming the
   wheel collision geoms (URDF import otherwise leaves all geoms unnamed,
   which breaks mjlab's regex-based CollisionCfg/ActuatorCfg matching), adding
-  a free joint on the chassis (URDF always assumes a fixed base), and
-  patching in mass/inertia per body (see WHEEL_MASS_KG/CHASSIS_MASS_KG
-  above)."""
+  a free joint on the chassis (URDF always assumes a fixed base), and writing
+  explicit mass/inertia per body (see _apply_mass_model)."""
   mesh_cache: dict[str, trimesh.Trimesh] = {}
   urdf_text = JAVIS_URDF.read_text()
-  fixed_urdf = re.sub(r"package://assets/", "assets/", urdf_text)
+  # Absolute, not relative: MuJoCo resolves mesh paths against the URDF file's
+  # own directory, so relative paths would force the temp copy to live inside
+  # the package directory (which is what an earlier version did, leaving stray
+  # files there on a crash). Absolute paths let it live in a real temp dir.
+  assets_dir = JAVIS_DIR / "assets"
+  fixed_urdf = re.sub(r"package://assets/", f"{assets_dir}/", urdf_text)
 
-  tmp_urdf = JAVIS_DIR / "_javis_spec_tmp.urdf"
-  tmp_urdf.write_text(fixed_urdf)
-  try:
+  with tempfile.TemporaryDirectory(prefix="javis_spec_") as tmp_dir:
+    tmp_urdf = Path(tmp_dir) / "robot.urdf"
+    tmp_urdf.write_text(fixed_urdf)
     spec = mujoco.MjSpec.from_file(str(tmp_urdf))
-  finally:
-    tmp_urdf.unlink()
 
   # URDF import leaves every geom unnamed (empty string). mjlab's
   # CollisionCfg(disable_other_geoms=True) deduplicates by name when turning
@@ -293,6 +302,7 @@ def get_spec() -> mujoco.MjSpec:
 
   chassis = spec.worldbody.bodies[0]
   _add_chassis_collision_hull(spec, chassis, mesh_cache)
+  _add_payload_geom(chassis)
   _add_imu(spec, chassis)
   chassis.add_freejoint()
 
@@ -310,12 +320,7 @@ def get_spec() -> mujoco.MjSpec:
   # compile) is sufficient regardless of exact order.
   spec.compiler.discardvisual = False
 
-  spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_TRUE
-  default_masses = _default_density_body_masses()
-  _set_mass_from_density(chassis, CHASSIS_MASS_KG, default_masses["body"], (CHASSIS_COLLISION_GEOM,))
-  for wheel_body_name in ("wheel", "wheel_2"):
-    wheel_body = next(b for b in spec.bodies if b.name == wheel_body_name)
-    _set_mass_from_density(wheel_body, WHEEL_MASS_KG, default_masses[wheel_body_name])
+  _apply_mass_model(spec)
 
   return spec
 
@@ -365,14 +370,32 @@ def get_spec() -> mujoco.MjSpec:
 # wheel is actually driving the assembled robot. Re-run
 # scripts/calibrate_actuator.py fit with a longer, cleaner log (multiple
 # velocity steps, each held to steady state) for a confident final value.
+WHEEL_TORQUE_CONSTANT_NM_PER_A = 0.207
+WHEEL_CURRENT_LIMIT_A = 15.0
+WHEEL_EFFORT_LIMIT_NM = WHEEL_TORQUE_CONSTANT_NM_PER_A * WHEEL_CURRENT_LIMIT_A  # 3.105
+WHEEL_DAMPING_NM_PER_RAD_S = 0.028
+
 WHEEL_ACTUATOR_CFG = BuiltinVelocityActuatorCfg(
   target_names_expr=WHEEL_JOINTS,
-  damping=0.028,
-  effort_limit=3.1,
+  damping=WHEEL_DAMPING_NM_PER_RAD_S,
+  effort_limit=WHEEL_EFFORT_LIMIT_NM,
+)
+
+# Plain torque actuator, used when the ODrive PI velocity loop is simulated
+# explicitly in javis/mdp/actions.py instead of leaning on MuJoCo's <velocity>
+# actuator (which is proportional-only -- see that module's docstring for why
+# the missing integral term matters so much under a varying payload).
+WHEEL_MOTOR_ACTUATOR_CFG = BuiltinMotorActuatorCfg(
+  target_names_expr=WHEEL_JOINTS,
+  effort_limit=WHEEL_EFFORT_LIMIT_NM,
 )
 
 JAVIS_ARTICULATION = EntityArticulationInfoCfg(
   actuators=(WHEEL_ACTUATOR_CFG,),
+)
+
+JAVIS_MOTOR_ARTICULATION = EntityArticulationInfoCfg(
+  actuators=(WHEEL_MOTOR_ACTUATOR_CFG,),
 )
 
 ##
@@ -415,12 +438,19 @@ D435_CAMERA_CFG = CameraCfg(
 )
 
 
-def get_javis_robot_cfg() -> EntityCfg:
+def get_javis_robot_cfg(torque_actuators: bool = False) -> EntityCfg:
+  """The rover as an mjlab entity.
+
+  Args:
+    torque_actuators: use plain <motor> actuators instead of MuJoCo's built-in
+      <velocity> ones. Required by javis/mdp/actions.py's OdriveVelocityAction,
+      which runs the board's PI loop itself and commands torque directly.
+  """
   return EntityCfg(
     init_state=INIT_STATE,
     collisions=(ROBOT_COLLISION,),
     spec_fn=get_spec,
-    articulation=JAVIS_ARTICULATION,
+    articulation=JAVIS_MOTOR_ARTICULATION if torque_actuators else JAVIS_ARTICULATION,
     cameras=(D435_CAMERA_CFG,),
   )
 
