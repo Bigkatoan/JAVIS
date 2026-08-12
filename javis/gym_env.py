@@ -690,3 +690,13 @@ class JavisBalanceEnv(gym.Env):
     if self._renderer is not None:
       self._renderer.close()
       self._renderer = None
+
+
+# Registered under gymnasium's own registry (distinct from mjlab's separate
+# task registry, javis/tasks.py) so any tool that expects a plain `gym.make`
+# id -- e.g. github.com/Bigkatoan/SRL's `srl-train --env <id>`, which
+# resolves envs via `gym.make()` -- can reach this env without importing
+# javis.gym_env directly. `id="Javis-Balance-v0"` is picked at import time;
+# importing this module (or anything that imports it, e.g. via
+# scripts/train_srl.py) is what makes the id resolvable.
+gym.register(id="Javis-Balance-v0", entry_point=JavisBalanceEnv)

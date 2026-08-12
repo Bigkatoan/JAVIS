@@ -34,6 +34,15 @@ gym = [
   "matplotlib",
 ]
 
+# github.com/Bigkatoan/SRL as a third training backend for javis/gym_env.py's
+# Javis-Balance-v0 (registered at import time -- see that module's bottom),
+# via scripts/train_srl.py + configs/srl/*.yaml. Not on PyPI, so a git URL;
+# needs `gymnasium` too but that's already declared under `gym` above.
+srl = [
+  "srl-rl @ git+https://github.com/Bigkatoan/SRL.git",
+  "gymnasium",
+]
+
 [project.entry-points."mjlab.tasks"]
 javis = "javis.tasks"
 
