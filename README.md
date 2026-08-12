@@ -244,6 +244,42 @@ Evaluate and export:
 .venv/bin/python scripts/export_onnx.py          --checkpoint <ckpt>  # ONNX + I/O contract
 ```
 
+## Alternative: plain MuJoCo + Gymnasium (no mjlab/wandb)
+
+`javis/gym_env.py` is a second, independent path to the same balance +
+twist-tracking problem, for when the mjlab/rsl-rl/wandb stack above isn't
+available or wanted: one robot per OS process (plain `mujoco`, no
+MuJoCo-Warp GPU batching), a standard `gymnasium.Env` interface, and
+`stable-baselines3` for training. Logging is stdout + CSV only — no
+tensorboard, no wandb.
+
+```bash
+uv pip install --python .venv/bin/python -e ".[gym]"
+
+.venv/bin/python scripts/train_gym.py --algo ppo --num-envs 16 --total-timesteps 2000000
+.venv/bin/python scripts/train_gym.py --algo sac --num-envs 8  --total-timesteps 500000   # or td3 / ddpg
+
+.venv/bin/python scripts/plot_gym_results.py --log-dir logs/gym_ppo/<run>   # writes PNGs next to the CSVs
+```
+
+It reuses `javis.robot_constants.get_spec()` and `javis.mass_model` directly
+(both are plain MuJoCo/numpy/torch, nothing mjlab-specific), so it's built
+from the same URDF, mass model and DR ranges (`javis/sim_config.py`) as
+`javis/balance_task.py` — same reward terms, same ODrive PI velocity loop
+(`javis/mdp/actions.py`), same feasibility filter, same 100 Hz/400 Hz control/
+physics split, same 24-frame observation history. What's simplified, and why,
+is documented in `javis/gym_env.py`'s module docstring; the one worth knowing
+up front is that rough terrain is approximated by tilting gravity by the
+slope angle each episode instead of building a heightfield — physically
+equivalent from the robot's own dynamics, and it sidesteps the mjlab rough
+task's heightfield-resolution contact warnings entirely.
+
+Any continuous-action `stable-baselines3` algorithm works against
+`JavisBalanceEnv` unchanged (it's a standard `Box(-1, 1, (2,))` action
+space); `scripts/train_gym.py --algo` currently wires up PPO (on-policy) and
+SAC/TD3/DDPG (off-policy, replay buffer, `gradient_steps=num_envs` so the
+update-to-data ratio matches running one env at `train_freq=1`).
+
 ## Simulation notes / known gaps
 
 - **The ODrive velocity gains on the hardware cannot balance this robot.**
