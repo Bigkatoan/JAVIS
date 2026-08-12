@@ -128,16 +128,37 @@ class JavisBalanceEnv(gym.Env):
     seed: int | None = None,
     force_slope_rad: float | None = None,
     noise_scale: float = 1.0,
+    terrain_type: str = "flat",
+    terrain_slope_deg: float = 12.0,
+    init_xy_jitter: float = 0.5,
   ):
     """
     force_slope_rad: pin every episode's terrain-proxy slope to this exact
       angle (heading fixed at 0, i.e. "downhill" is always +x) instead of
       randomly drawing flat/slope each reset. For scripted eval/video
-      scenarios, not training -- leave None there.
+      scenarios, not training -- leave None there. Ignored (treated as 0)
+      when terrain_type != "flat", since the ground itself now provides the
+      tilt -- see terrain_type below.
     noise_scale: multiplies every noise/bias term in `_compute_frame`
       (IMU white noise, per-episode IMU bias, encoder noise). 1.0 matches
       training; scripted scenarios can dial this to compare a policy's
       behavior under lighter/heavier sensor noise than it trained on.
+    terrain_type: "flat" (default, matches training -- an infinite flat
+      plane, slope simulated via force_slope_rad's gravity tilt if set),
+      "ramp" (a real tilted-plane geom at terrain_slope_deg -- an actual
+      sloped floor, for scripted video/eval where a visually flat floor
+      during a "slope" scenario would be misleading), or "rough" (a
+      randomly-bumpy heightfield, peak-to-peak matching
+      JavisDomainCfg.terrain.rough_noise_range's upper bound). Fixed at
+      construction time (MuJoCo geometry can't change shape after compile),
+      so switching terrain means building a new env, not a mid-run swap.
+      All three share the same checkered ground material, purely so motion
+      reads clearly on video -- has no physical effect.
+    init_xy_jitter: half-width (m) of the uniform x/y spawn range in
+      reset(). Training uses the full 0.5 m (matches javis/balance_task.py's
+      reset_base); scripted video on a "ramp"/"rough" terrain built around
+      the origin passes a smaller value so the robot reliably spawns ON the
+      terrain feature instead of near its edge.
     """
     super().__init__()
     self.domain = domain or JavisDomainCfg()
@@ -146,6 +167,9 @@ class JavisBalanceEnv(gym.Env):
     self._np_random = np.random.default_rng(seed)
     self._force_slope_rad = force_slope_rad
     self._noise_scale = noise_scale
+    self._terrain_type = terrain_type
+    self._terrain_slope_deg = terrain_slope_deg
+    self._init_xy_jitter = init_xy_jitter
 
     self._build_model()
 
@@ -176,14 +200,62 @@ class JavisBalanceEnv(gym.Env):
     for name in WHEEL_COLLISION_GEOMS:
       next(g for g in spec.geoms if g.name == name).priority = 1
 
-    spec.worldbody.add_geom(
-      name="ground",
-      type=mujoco.mjtGeom.mjGEOM_PLANE,
-      size=[20, 20, 0.1],
-      contype=1,
-      conaffinity=1,
-      rgba=[0.5, 0.5, 0.55, 1.0],
+    # Checkered material on every terrain variant purely so translation/
+    # rotation reads clearly on video against an otherwise-featureless plane
+    # -- no physical effect (it's a texture, not geometry).
+    spec.add_texture(
+      name="ground_checker",
+      type=mujoco.mjtTexture.mjTEXTURE_2D,
+      builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
+      rgb1=[0.35, 0.4, 0.42],
+      rgb2=[0.55, 0.6, 0.62],
+      width=300,
+      height=300,
     )
+    spec.add_material(
+      name="ground_mat", textures=["", "ground_checker"], texrepeat=[6, 6], texuniform=True
+    )
+
+    if self._terrain_type == "rough":
+      # A fixed random bump field (not resampled per-episode -- geometry is
+      # baked in at construction, see __init__'s terrain_type docstring).
+      # Peak-to-peak matches JavisDomainCfg.terrain.rough_noise_range's
+      # upper bound (2 cm), same magnitude the mjlab task's rough terrain
+      # uses, just a single static realization instead of one per episode.
+      nrow = ncol = 60
+      terrain_rng = np.random.default_rng(0)
+      heights = terrain_rng.uniform(0.0, 1.0, size=(nrow, ncol))
+      spec.add_hfield(
+        name="rough_hfield", size=[6.0, 6.0, 0.02, 0.05], nrow=nrow, ncol=ncol,
+        userdata=heights.flatten().tolist(),
+      )
+      spec.worldbody.add_geom(
+        name="ground", type=mujoco.mjtGeom.mjGEOM_HFIELD, hfieldname="rough_hfield",
+        contype=1, conaffinity=1, material="ground_mat",
+      )
+    elif self._terrain_type == "ramp":
+      # A real tilted-plane geom (finite box, not mjGEOM_PLANE which MuJoCo
+      # always treats as infinite/untilted for its collision shortcut) --
+      # rotated about y by terrain_slope_deg, positioned so its top surface
+      # still passes through world (0, 0, 0), matching the flat case's
+      # convention that INIT_STATE's spawn height is measured from z=0.
+      slope_rad = math.radians(self._terrain_slope_deg)
+      half_thick = 0.1
+      quat = _euler_to_quat(0.0, -slope_rad, 0.0)
+      # Box center placed so its top face (local +z, offset half_thick) still
+      # passes through world (0, 0, 0) after rotation -- i.e. solve
+      # pos + R @ [0, 0, half_thick] == 0 for pos, with R = Ry(-slope_rad).
+      pos = [half_thick * math.sin(slope_rad), 0.0, -half_thick * math.cos(slope_rad)]
+      spec.worldbody.add_geom(
+        name="ground", type=mujoco.mjtGeom.mjGEOM_BOX, size=[6.0, 3.0, half_thick],
+        pos=pos, quat=quat.tolist(),
+        contype=1, conaffinity=1, material="ground_mat",
+      )
+    else:
+      spec.worldbody.add_geom(
+        name="ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[20, 20, 0.1],
+        contype=1, conaffinity=1, material="ground_mat",
+      )
 
     # Plain torque actuators, one per wheel joint -- the ODrive PI loop below
     # computes the torque itself and writes it straight into data.ctrl, the
@@ -349,10 +421,20 @@ class JavisBalanceEnv(gym.Env):
     self._wheel_total_kg = total
 
     # Terrain proxy: tilt gravity by a random slope angle instead of a
-    # heightfield -- see module docstring.
-    if self._force_slope_rad is not None:
+    # heightfield -- see module docstring. Skipped entirely when
+    # terrain_type != "flat": the ground geometry itself provides the tilt/
+    # roughness there, so gravity stays plain vertical to avoid double-
+    # counting the slope.
+    if self._terrain_type != "flat":
+      self._slope_rad = 0.0
+      self.model.opt.gravity = [0.0, 0.0, -GRAVITY]
+    elif self._force_slope_rad is not None:
       self._slope_rad = self._force_slope_rad
       heading = 0.0
+      s = math.sin(self._slope_rad)
+      self.model.opt.gravity = [
+        GRAVITY * s * math.cos(heading), GRAVITY * s * math.sin(heading), -GRAVITY * math.cos(self._slope_rad),
+      ]
     else:
       tcfg = self.domain.terrain
       if _uniform(rng, 0.0, 1.0) < tcfg.flat_proportion:
@@ -361,12 +443,10 @@ class JavisBalanceEnv(gym.Env):
         ratio = _uniform(rng, *tcfg.slope_range)
         self._slope_rad = math.atan(ratio)
       heading = _uniform(rng, 0.0, 2 * math.pi)
-    s = math.sin(self._slope_rad)
-    self.model.opt.gravity = [
-      GRAVITY * s * math.cos(heading),
-      GRAVITY * s * math.sin(heading),
-      -GRAVITY * math.cos(self._slope_rad),
-    ]
+      s = math.sin(self._slope_rad)
+      self.model.opt.gravity = [
+        GRAVITY * s * math.cos(heading), GRAVITY * s * math.sin(heading), -GRAVITY * math.cos(self._slope_rad),
+      ]
 
     self._sample_load_feasible()
 
@@ -393,9 +473,15 @@ class JavisBalanceEnv(gym.Env):
     # javis/balance_task.py's reset_base -- same ranges.
     mujoco.mj_resetData(self.model, self.data)
     qpos = self.data.qpos
-    qpos[self._free_qpos_adr + 0] = _uniform(rng, -0.5, 0.5)
-    qpos[self._free_qpos_adr + 1] = _uniform(rng, -0.5, 0.5)
-    qpos[self._free_qpos_adr + 2] = 0.12 + _uniform(rng, 0.0, 0.02)
+    j = self._init_xy_jitter
+    qpos[self._free_qpos_adr + 0] = _uniform(rng, -j, j)
+    qpos[self._free_qpos_adr + 1] = _uniform(rng, -j, j)
+    # A bit more clearance than the flat-ground 0.12 m when the terrain
+    # itself has relief (ramp/rough) -- INIT_STATE's convention measures
+    # from a locally-flat z=0, which a bumpy hfield or a jittered spawn
+    # point on a ramp doesn't exactly satisfy; contact resolves the rest.
+    spawn_clearance = 0.12 if self._terrain_type == "flat" else 0.18
+    qpos[self._free_qpos_adr + 2] = spawn_clearance + _uniform(rng, 0.0, 0.02)
     quat = _euler_to_quat(
       _uniform(rng, -0.35, 0.35), _uniform(rng, -0.35, 0.35), _uniform(rng, -math.pi, math.pi)
     )
