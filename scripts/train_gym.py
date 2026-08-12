@@ -17,8 +17,11 @@ sensible defaults (off-policy algorithms use a replay buffer and different
 relevant knobs -- buffer_size/tau/train_freq instead of n_steps/gae_lambda/
 clip_range -- see `_build_model` below for exactly what differs).
 
-After training, plot the CSVs with:
-    .venv/bin/python scripts/plot_gym_results.py --log-dir <the printed log dir>
+When training finishes it automatically plots the CSVs (scripts/plot_gym_results.py)
+and records a scenario video of the trained checkpoint (scripts/record_gym_video.py,
+flat/ramp/rough terrain x a couple of noise levels) into --log-dir -- pass --no-plot
+/ --no-video to skip either (e.g. for a quick unattended sweep where you'll plot/
+record afterward yourself, batched across runs).
 
 Usage:
     .venv/bin/python scripts/train_gym.py --algo ppo --num-envs 16 --total-timesteps 2000000
@@ -30,6 +33,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +71,9 @@ def parse_args() -> argparse.Namespace:
                   help="default: logs/gym_<algo>/<timestamp>")
   p.add_argument("--save-interval-steps", type=int, default=200_000,
                   help="save a checkpoint every this many total env steps")
+  p.add_argument("--no-plot", action="store_true", help="skip auto-plotting after training")
+  p.add_argument("--no-video", action="store_true", help="skip auto-recording a scenario video after training")
+  p.add_argument("--video-seconds", type=float, default=6.0, help="per scenario, see record_gym_video.py")
   return p.parse_args()
 
 
@@ -182,9 +190,33 @@ def main() -> None:
   final_path = log_dir / "model_final"
   model.save(str(final_path))
   print(f"[train_gym] done. final model: {final_path}.zip")
-  print(f"[train_gym] plot with: .venv/bin/python scripts/plot_gym_results.py --log-dir {log_dir}")
 
   vec_env.close()
+
+  # Auto-plot + auto-video, each a separate subprocess (reloads the saved
+  # checkpoint fresh, same as running the two scripts by hand) so a failure
+  # in either -- a rendering issue, a missing display lib -- can't take the
+  # training run's own exit status down with it.
+  if not args.no_plot:
+    print(f"[train_gym] plotting -> {log_dir}")
+    result = subprocess.run(
+      [sys.executable, "scripts/plot_gym_results.py", "--log-dir", str(log_dir)]
+    )
+    if result.returncode != 0:
+      print(f"[train_gym] plotting failed (exit {result.returncode}) -- "
+            f"re-run by hand: .venv/bin/python scripts/plot_gym_results.py --log-dir {log_dir}")
+
+  if not args.no_video:
+    print(f"[train_gym] recording scenario video -> {log_dir}")
+    result = subprocess.run([
+      sys.executable, "scripts/record_gym_video.py",
+      "--runs", f"{args.algo}={log_dir}",
+      "--out-dir", str(log_dir),
+      "--seconds", str(args.video_seconds),
+    ])
+    if result.returncode != 0:
+      print(f"[train_gym] video recording failed (exit {result.returncode}) -- re-run by hand: "
+            f".venv/bin/python scripts/record_gym_video.py --runs {args.algo}={log_dir} --out-dir {log_dir}")
 
 
 if __name__ == "__main__":
