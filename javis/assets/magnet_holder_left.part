@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "dc9da444eab67f171aca63bc",
-    "documentMicroversion": "643e6000326530541d115209",
-    "elementId": "f46047a7f33e0383fa665cac",
+    "documentMicroversion": "c31aa401f58aa4e1dc42cb41",
+    "elementId": "83d245e5121f35a5b2259477",
     "fullConfiguration": "default",
-    "id": "MH3VGggEVjbdi054e",
+    "id": "M49rCTA+GlW8vPPn5",
     "isStandardContent": false,
-    "name": "Part 5 <1>",
-    "partId": "RNBD",
+    "name": "magnet_holder_left <1>",
+    "partId": "JLD",
     "suppressed": false,
     "type": "Part"
 }

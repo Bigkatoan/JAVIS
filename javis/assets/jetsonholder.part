@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "dc9da444eab67f171aca63bc",
-    "documentMicroversion": "1d4ff37c05bf7b65be1fccae",
-    "elementId": "f46047a7f33e0383fa665cac",
+    "documentMicroversion": "c31aa401f58aa4e1dc42cb41",
+    "elementId": "6625a6282a096a41dd9d9864",
     "fullConfiguration": "default",
-    "id": "MjILrXq1eSyFQaS3z",
+    "id": "MFnxC8NpKzERjJe35",
     "isStandardContent": false,
     "name": "JetsonHolder <1>",
-    "partId": "J9D",
+    "partId": "JFD",
     "suppressed": false,
     "type": "Part"
 }

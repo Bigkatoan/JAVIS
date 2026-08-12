@@ -146,7 +146,7 @@ class OdriveVelocityAction(BaseAction):
     """Spin-axis inertia of one unloaded wheel, from the mass model."""
     from .. import mass_model
 
-    _, _, _, principal = mass_model.fuse_nominal("wheel")
+    _, _, _, principal = mass_model.fuse_nominal(mass_model.WHEEL_BODIES[0])
     # The wheel body frame is rotated so the spin axis is local z; the spin
     # moment is the distinct (largest) one, the other two being equal.
     return float(max(principal))

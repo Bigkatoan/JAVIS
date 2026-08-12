@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
 
 def wheel_inertia() -> float:
     """Spin-axis inertia of one wheel, from the mass model."""
-    _, _, _, principal = mass_model.fuse_nominal("wheel")
+    _, _, _, principal = mass_model.fuse_nominal(mass_model.WHEEL_BODIES[0])
     # The wheel body's frame is rotated so its spin axis is local z; the spin
     # moment is the distinct (largest) one, the other two being equal.
     return float(np.max(principal))

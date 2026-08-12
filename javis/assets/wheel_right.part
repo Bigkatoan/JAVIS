@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "dc9da444eab67f171aca63bc",
-    "documentMicroversion": "1d4ff37c05bf7b65be1fccae",
-    "elementId": "40778be24d0dfba557e5627f",
+    "documentMicroversion": "c31aa401f58aa4e1dc42cb41",
+    "elementId": "83d245e5121f35a5b2259477",
     "fullConfiguration": "default",
-    "id": "MbAYASJqTJ40yXl2r",
+    "id": "MvysOea5/54h6C1On",
     "isStandardContent": false,
-    "name": "wheel <1>",
-    "partId": "JHH",
+    "name": "wheel_right <1>",
+    "partId": "RmBT",
     "suppressed": false,
     "type": "Part"
 }

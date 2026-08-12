@@ -34,18 +34,25 @@ JAVIS_URDF: Path = JAVIS_DIR / "robot.urdf"
 assert JAVIS_URDF.exists()
 
 WHEEL_JOINTS = ("left_wheel", "right_wheel")
-WHEEL_COLLISION_GEOMS = ("wheel_collision", "wheel_2_collision")
-WHEEL_BODIES = ("wheel", "wheel_2")
-CHASSIS_BODY_NAME = "body"
+WHEEL_COLLISION_GEOMS = ("wheel_left_collision", "wheel_right_collision")
+WHEEL_BODIES = ("wheel_left", "wheel_right")
+CHASSIS_BODY_NAME = "base_link"
 CHASSIS_COLLISION_GEOM = "chassis_collision"
 PAYLOAD_GEOM = "payload"
 
-# Measured from assets/wheel.stl bounds. Used for the analytic balance envelope
-# (scripts/inspect_mass.py) and for converting wheel torque to ground force.
+# CAD re-pulled 2026-08-12 (new Onshape element, wheel/mount hardware
+# redesigned -- link names changed body/wheel/wheel_2 -> base_link/wheel_left/
+# wheel_right, but the wheel mesh itself (radius, width) is unchanged from the
+# previous pull; only its mounting position on the chassis moved).
+
+# Measured from assets/wheel_left.stl bounds. Used for the analytic balance
+# envelope (scripts/inspect_mass.py) and for converting wheel torque to
+# ground force.
 WHEEL_RADIUS_M = 0.098
 # Half the wheel track, from robot.urdf's left/right wheel joint origins
-# (y = -+0.129). The lateral limit for the CoM before one wheel unloads.
-WHEEL_HALF_TRACK_M = 0.129
+# (y = -+0.1, narrower than the previous CAD's 0.129). The lateral limit for
+# the CoM before one wheel unloads.
+WHEEL_HALF_TRACK_M = 0.1
 
 
 def _quat_to_mat(quat: tuple[float, float, float, float]) -> np.ndarray:
@@ -212,12 +219,14 @@ def _rpy_to_quat(rpy: tuple[float, float, float]) -> tuple[float, float, float, 
 
 
 # IMU mount pose, copied from robot.urdf's "dfbot_imu_sensor" part <origin>,
-# relative to the chassis ("body") link frame. Note: that CAD part name is a
+# relative to the chassis link frame. Note: that CAD part name is a
 # placeholder from the Onshape library -- the real sensor on the Jetson is a
 # Bosch BMX160 (+ BMP388 baro), confirmed via the bmx160_bmp388_driver ROS2
 # package running on-robot (see SIM2REAL.md sec 5).
+# z updated 2026-08-12 for the redesigned CAD (0.26695 -> 0.159); x/rpy
+# unchanged, so only mount height moved.
 IMU_SITE_NAME = "imu"
-IMU_POS = (-0.0675, 0.0, 0.26695)
+IMU_POS = (-0.0675, 0.0, 0.159)
 IMU_RPY = (0.0, 0.0, 1.5708)
 
 
@@ -254,7 +263,8 @@ def _add_imu(spec: mujoco.MjSpec, chassis: mujoco.MjsBody) -> None:
 # (stereo) module has a wider ~87 x 58 deg FOV and a small baseline offset
 # from the RGB lens that this single camera does not model.
 D435_CAMERA_NAME = "d435"
-D435_POS = (0.12105, 0.0, 0.30795)
+# z updated 2026-08-12 for the redesigned CAD (0.30795 -> 0.2).
+D435_POS = (0.12105, 0.0, 0.2)
 D435_RPY = (1.5708, 0.0, 1.5708)
 D435_FOVY_DEG = 42.0
 
@@ -297,7 +307,7 @@ def get_spec() -> mujoco.MjSpec:
       geom.name = f"geom_{i}"
 
   for body in spec.bodies:
-    if body.name in ("wheel", "wheel_2"):
+    if body.name in WHEEL_BODIES:
       body.geoms[0].name = f"{body.name}_collision"
 
   chassis = spec.worldbody.bodies[0]

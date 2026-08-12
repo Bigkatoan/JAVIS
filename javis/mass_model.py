@@ -62,10 +62,10 @@ _CACHE_PATH: Path = JAVIS_DIR / "assets" / "_mass_moments.npz"
 
 # Bump when GROUP_PATTERNS or the moment math changes, so a stale cache from an
 # earlier definition is rebuilt instead of silently reused.
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 
-CHASSIS_BODY = "body"
-WHEEL_BODIES = ("wheel", "wheel_2")
+CHASSIS_BODY = "base_link"
+WHEEL_BODIES = ("wheel_left", "wheel_right")
 
 ##
 # Group definitions.
@@ -90,15 +90,21 @@ GROUP_PATTERNS: dict[str, tuple[str, ...]] = {
   "printed": (
     "base_link.stl",
     "headcover.stl",
-    "gearbox.stl",
-    "part_6.stl",
-    "part_6__*.stl",
-    "coupler.stl",
-    "wheelconnector.stl",
     "jetson_holder.stl",
     "jetsonholder.stl",
-    "spur_gear__*.stl",
     "board_frame.stl",
+    # 2026-08-12 CAD update: the old gearbox/coupler/wheelconnector power
+    # gear train is gone, replaced by a direct-drive encoder/magnet mount.
+    "encoder_holder_left.stl",
+    "encoder_holder_right.stl",
+    "magnet_holder_left.stl",
+    "magnet_holder_right.stl",
+    "handle_left.stl",
+    "handle_right.stl",
+    "wheel_wire_cover_left.stl",
+    "wheel_wire_cover_right.stl",
+    "part_2.stl",
+    "part_3.stl",
   ),
   "jetson": ("main_board_simplified.stl", "module_board_me*.stl"),
   "camera": ("intelrealsensed435.stl",),
@@ -107,11 +113,14 @@ GROUP_PATTERNS: dict[str, tuple[str, ...]] = {
   "hardware": (
     "m3x*.stl",
     "m1_6x*.stl",
-    "6802bearing.stl",
-    "6808_2rs.stl",
-    "693zz.stl",
   ),
 }
+# Everything else in the 2026-08-12 CAD is small JST/terminal connectors,
+# copper pins, capacitors and misc screws (16_copper*, 1714971_*, 1714984_*,
+# 632722110112_*, sm0*b_ghs_tb*, body019-024, ...) -- together well under 1%
+# of chassis volume, so they're intentionally left unmatched and fall into
+# FALLBACK_GROUP, which is exactly the "mixed bag of copper and plastic"
+# `_NOMINAL_DENSITY["electronics_misc"]` describes below.
 FALLBACK_GROUP = "electronics_misc"
 
 # Point-mass groups: no CAD geometry at all, declared as (x, y, z) in the
@@ -135,12 +144,12 @@ POINT_GROUPS: dict[str, tuple[float, float, float]] = {
 _NOMINAL_MASS_KG: dict[str, float] = {
   # Measured 2026-08-06 (SIM2REAL.md sec 1).
   "battery": 3.423,
-  # One 1 kg spool of PLA for the entire robot, printed at ~15% infill (user,
-  # 2026-08-10). Cross-check: 1.000 kg / 2438.5 cm^3 = 0.410 g/cm^3, i.e. an
-  # effective 33% of solid PLA (1.24 g/cm^3) once perimeters and top/bottom
-  # layers are counted on top of 15% sparse infill. Two independent estimates
-  # agreeing is why this number is trusted over a density guess.
-  "printed": 1.000,
+  # Measured 2026-08-12 (user, whole print for the 2026-08-12 CAD update):
+  # 1332.26 g. Cross-check: 1.33226 kg / 3623.6 cm^3 = 0.368 g/cm^3, close to
+  # the 2026-08-10 spool's 0.410 g/cm^3 (1.000 kg / 2438.5 cm^3) -- the small
+  # drop is consistent with the new parts (encoder_holder_left/right etc.)
+  # having a lower average infill fraction than the old gearbox/coupler set.
+  "printed": 1.33226,
   # Catalog: NVIDIA Jetson Orin Nano Developer Kit, 176 g (module + carrier).
   "jetson": 0.176,
   # Catalog: Intel RealSense D435, 72 g (D400-series datasheet).
@@ -158,8 +167,9 @@ _NOMINAL_MASS_KG: dict[str, float] = {
 # Groups whose mass is derived from mesh volume x an assumed material density,
 # in kg/m^3.
 _NOMINAL_DENSITY: dict[str, float] = {
-  # Steel fasteners and bearings. Sanity check: 2 x 6808-2RS at this density
-  # gives 95 g, against a ~48 g/bearing catalog figure -- matches.
+  # Steel fasteners (M3/M1.6 screws). The old gearbox-era bearings
+  # (6802/6808-2RS/693ZZ) are gone from the 2026-08-12 CAD -- direct-drive
+  # encoder/magnet mount has none.
   "hardware": 7850.0,
   # Connectors, terminals, capacitors, copper busbars, shielding. A mixed bag
   # of copper and plastic; 3000 is a middling guess covered by wide DR.
