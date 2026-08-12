@@ -23,6 +23,17 @@ sim = [
   "scipy",
 ]
 
+# Lightweight companion to `sim`: javis/gym_env.py + scripts/train_gym.py.
+# Deliberately does not pull in mjlab/tensorboard/wandb -- plain mujoco +
+# gymnasium + stable-baselines3, terminal/CSV logging only. `trimesh` isn't
+# listed again here because it's already required transitively by
+# javis.mass_model, which gym_env.py imports.
+gym = [
+  "gymnasium",
+  "stable-baselines3",
+  "matplotlib",
+]
+
 [project.entry-points."mjlab.tasks"]
 javis = "javis.tasks"
 

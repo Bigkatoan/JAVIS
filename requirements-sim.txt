@@ -18,6 +18,8 @@ cffi==2.1.1
 charset-normalizer==3.4.9
 click==8.4.2
 cloudpickle==3.1.2
+colorama==0.4.6
+commentjson==0.9.0
 contourpy==1.3.3
 cryptography==50.0.0
 cuda-bindings==13.3.1
@@ -30,6 +32,7 @@ docstring-parser==0.18.0
 etils==1.14.0
 executing==2.2.1
 fabric==3.2.3
+farama-notifications==0.0.6
 filelock==3.32.2
 flatbuffers==25.12.19
 fonttools==4.63.0
@@ -38,6 +41,7 @@ gitdb==4.0.12
 gitpython==3.1.58
 glfw==2.10.2
 grpcio==1.83.0
+gymnasium==1.3.0
 idna==3.18
 imageio==2.37.4
 imageio-ffmpeg==0.6.0
@@ -45,9 +49,11 @@ importlib-metadata==9.0.0
 invoke==2.2.1
 ipython==9.16.1
 ipython-pygments-lexers==1.1.1
+-e file:///home/ubuntu/antd/JAVIS
 jedi==0.20.0
 jinja2==3.1.6
 kiwisolver==1.5.0
+lark-parser==0.7.8
 markdown==3.10.3
 markdown-it-py==4.2.0
 markupsafe==3.0.3
@@ -64,6 +70,7 @@ mujoco==3.10.0
 mujoco-warp==3.10.0.3
 networkx==3.6.1
 numpy==2.4.6
+numpy-stl==4.0.0
 nvidia-cublas==13.1.1.3
 nvidia-cuda-cupti==13.0.85
 nvidia-cuda-nvrtc==13.0.88
@@ -83,6 +90,7 @@ onnx==1.22.0
 onnx-ir==0.2.1
 onnxruntime==1.28.0
 onnxscript==0.7.1
+onshape-to-robot==1.8.2
 orjson==3.11.9
 packaging==26.3
 paramiko==5.0.0
@@ -99,11 +107,14 @@ pure-eval==0.2.3
 pycparser==3.0
 pydantic==2.13.4
 pydantic-core==2.46.4
+pyflakes==3.4.0
 pygments==2.20.0
 pynacl==1.6.2
 pyopengl==3.1.10
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-utils==4.0.0
 pyvers==0.2.3
 pyyaml==6.0.3
 requests==2.34.2
@@ -114,6 +125,7 @@ sentry-sdk==2.66.1
 setuptools==84.0.0
 six==1.17.0
 smmap==5.0.3
+stable-baselines3==2.9.0
 stack-data==0.6.3
 sympy==1.14.0
 tensorboard==2.21.0
@@ -124,6 +136,7 @@ torchrunx==0.4.0
 torchvision==0.28.0
 tqdm==4.70.0
 traitlets==5.16.1
+transforms3d==0.4.2
 trimesh==4.12.2
 triton==3.7.1
 typeguard==4.6.0
