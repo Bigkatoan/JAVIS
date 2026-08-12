@@ -126,12 +126,26 @@ class JavisBalanceEnv(gym.Env):
     difficulty: float = 1.0,
     render_mode: str | None = None,
     seed: int | None = None,
+    force_slope_rad: float | None = None,
+    noise_scale: float = 1.0,
   ):
+    """
+    force_slope_rad: pin every episode's terrain-proxy slope to this exact
+      angle (heading fixed at 0, i.e. "downhill" is always +x) instead of
+      randomly drawing flat/slope each reset. For scripted eval/video
+      scenarios, not training -- leave None there.
+    noise_scale: multiplies every noise/bias term in `_compute_frame`
+      (IMU white noise, per-episode IMU bias, encoder noise). 1.0 matches
+      training; scripted scenarios can dial this to compare a policy's
+      behavior under lighter/heavier sensor noise than it trained on.
+    """
     super().__init__()
     self.domain = domain or JavisDomainCfg()
     self.difficulty = difficulty
     self.render_mode = render_mode
     self._np_random = np.random.default_rng(seed)
+    self._force_slope_rad = force_slope_rad
+    self._noise_scale = noise_scale
 
     self._build_model()
 
@@ -336,13 +350,17 @@ class JavisBalanceEnv(gym.Env):
 
     # Terrain proxy: tilt gravity by a random slope angle instead of a
     # heightfield -- see module docstring.
-    tcfg = self.domain.terrain
-    if _uniform(rng, 0.0, 1.0) < tcfg.flat_proportion:
-      self._slope_rad = 0.0
+    if self._force_slope_rad is not None:
+      self._slope_rad = self._force_slope_rad
+      heading = 0.0
     else:
-      ratio = _uniform(rng, *tcfg.slope_range)
-      self._slope_rad = math.atan(ratio)
-    heading = _uniform(rng, 0.0, 2 * math.pi)
+      tcfg = self.domain.terrain
+      if _uniform(rng, 0.0, 1.0) < tcfg.flat_proportion:
+        self._slope_rad = 0.0
+      else:
+        ratio = _uniform(rng, *tcfg.slope_range)
+        self._slope_rad = math.atan(ratio)
+      heading = _uniform(rng, 0.0, 2 * math.pi)
     s = math.sin(self._slope_rad)
     self.model.opt.gravity = [
       GRAVITY * s * math.cos(heading),
@@ -401,9 +419,9 @@ class JavisBalanceEnv(gym.Env):
 
     # Persistent per-episode IMU bias (resampled once, held for the episode) --
     # see javis/balance_task.py's imu_noise() for the same step/bias figures.
-    self._imu_lin_bias = rng.uniform(-0.03, 0.03, size=3)
-    self._imu_ang_bias = rng.uniform(-0.03, 0.03, size=3)
-    self._grav_bias = rng.uniform(-0.015, 0.015, size=3)
+    self._imu_lin_bias = self._noise_scale * rng.uniform(-0.03, 0.03, size=3)
+    self._imu_ang_bias = self._noise_scale * rng.uniform(-0.03, 0.03, size=3)
+    self._grav_bias = self._noise_scale * rng.uniform(-0.015, 0.015, size=3)
 
     self._command = self._sample_command()
     self._next_command_t = _uniform(rng, 3.0, 8.0)
@@ -503,12 +521,13 @@ class JavisBalanceEnv(gym.Env):
     proj_gravity = xmat.T @ gravity_dir
 
     rng = self._np_random
-    lin_vel = lin_vel + self._imu_lin_bias + rng.uniform(-0.1, 0.1, size=3)
-    ang_vel = ang_vel + self._imu_ang_bias + rng.uniform(-0.1, 0.1, size=3)
-    proj_gravity = proj_gravity + self._grav_bias + rng.uniform(-0.03, 0.03, size=3)
+    s = self._noise_scale
+    lin_vel = lin_vel + self._imu_lin_bias + s * rng.uniform(-0.1, 0.1, size=3)
+    ang_vel = ang_vel + self._imu_ang_bias + s * rng.uniform(-0.1, 0.1, size=3)
+    proj_gravity = proj_gravity + self._grav_bias + s * rng.uniform(-0.03, 0.03, size=3)
 
     wheel_vel = np.array([self.data.qvel[a] for a in self._wheel_dof_adr])
-    wheel_vel = wheel_vel + rng.uniform(-0.5, 0.5, size=2)
+    wheel_vel = wheel_vel + s * rng.uniform(-0.5, 0.5, size=2)
 
     action = self._last_action if last_action is None else last_action
 
