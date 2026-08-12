@@ -199,7 +199,7 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       mode="startup",
       func=dr.body_com_offset,
       params={
-        "asset_cfg": SceneEntityCfg("robot", body_names=("body",)),
+        "asset_cfg": SceneEntityCfg("robot", body_names=("base_link",)),
         "operation": "add",
         "ranges": {0: (-0.02, 0.02), 1: (-0.02, 0.02), 2: (-0.03, 0.03)},
       },
@@ -235,7 +235,7 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # (wrong shape) rather than falling back to the root -- passing the
         # chassis body by name is the "Set per-robot" override
         # mjlab/tasks/velocity/velocity_env_cfg.py leaves blank upstream.
-        "asset_cfg": SceneEntityCfg("robot", body_names=("body",)),
+        "asset_cfg": SceneEntityCfg("robot", body_names=("base_link",)),
       },
     ),
     "is_alive": RewardTermCfg(func=envs_mdp.is_alive, weight=0.5),
@@ -272,7 +272,7 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     viewer=ViewerConfig(
       origin_type=ViewerConfig.OriginType.ASSET_BODY,
       entity_name="robot",
-      body_name="body",
+      body_name="base_link",
       distance=1.5,
       elevation=-20.0,
       azimuth=90.0,

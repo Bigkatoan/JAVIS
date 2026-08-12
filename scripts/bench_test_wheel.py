@@ -55,7 +55,7 @@ def _weld_chassis_to_world(spec: mujoco.MjSpec, chassis: mujoco.MjsBody) -> None
 def build_model() -> mujoco.MjModel:
   robot = Entity(get_javis_robot_cfg())
   spec = robot.spec
-  chassis = next(b for b in spec.bodies if b.name == "body")
+  chassis = next(b for b in spec.bodies if b.name == "base_link")
   _weld_chassis_to_world(spec, chassis)
   # A bare Entity has no lights (those normally come from mjlab's Scene/
   # scene.xml) -- add some so the render isn't near-black.
@@ -103,7 +103,7 @@ def main() -> None:
 
   renderer = mujoco.Renderer(model, height=args.height, width=args.width)
   cam = mujoco.MjvCamera()
-  cam.lookat = data.body("body").xpos.copy()
+  cam.lookat = data.body("base_link").xpos.copy()
   cam.distance = 1.3
   cam.azimuth = 120
   cam.elevation = -20

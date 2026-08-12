@@ -102,7 +102,7 @@ def get_state(env) -> DrState:
   device = env.device
   nominal = mass_model.nominal_mass_vector(mass_model.CHASSIS_BODY, device)
   moments = mass_model.get_moments()[mass_model.CHASSIS_BODY]
-  wheel_nominal = mass_model.nominal_masses("wheel")["wheel"]
+  wheel_nominal = mass_model.nominal_masses(mass_model.WHEEL_BODIES[0])["wheel"]
 
   def point_default(group: str) -> torch.Tensor:
     idx = moments.index(group)
@@ -538,7 +538,7 @@ def randomize_wheel_masses(
 
   state = get_state(env)
   rng = lerp_range(cfg.mass.wheel_scale_easy, cfg.mass.wheel_scale_hard, difficulty.level)
-  nominal = mass_model.nominal_masses("wheel")["wheel"]
+  nominal = mass_model.nominal_masses(mass_model.WHEEL_BODIES[0])["wheel"]
   model = env.sim.model
 
   for slot, body_name in enumerate(WHEEL_BODIES):

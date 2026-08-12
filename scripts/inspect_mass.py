@@ -16,7 +16,11 @@ import math
 import numpy as np
 
 from javis import mass_model
-from javis.robot_constants import WHEEL_EFFORT_LIMIT_NM, WHEEL_RADIUS_M
+from javis.robot_constants import (
+    WHEEL_EFFORT_LIMIT_NM,
+    WHEEL_HALF_TRACK_M,
+    WHEEL_RADIUS_M,
+)
 
 GRAVITY = 9.81
 
@@ -102,7 +106,7 @@ def main() -> None:
     mass_model.report()
 
     chassis_mass, chassis_com, _, _ = mass_model.fuse_nominal(mass_model.CHASSIS_BODY)
-    wheel_mass, _, _, _ = mass_model.fuse_nominal("wheel")
+    wheel_mass, _, _, _ = mass_model.fuse_nominal(mass_model.WHEEL_BODIES[0])
     total = chassis_mass + 2 * wheel_mass
 
     # The chassis link frame sits at the wheel axle; the ground is one wheel
@@ -112,13 +116,13 @@ def main() -> None:
 
     print("\n=== cross-checks ===")
     print(f"  chassis + 2 wheels   = {total:.3f} kg")
-    print("  previous guess       = 11.87 kg (CHASSIS_MASS_KG 6.0 + 2 x 2.936)")
-    print("  measured so far      = battery 3.423 kg, wheel 2.936 kg each")
+    print("  measured so far      = battery 3.423 kg, wheel 2.936 kg each, "
+          "printed 1.332 kg")
     print(f"  CoM above ground     = {com_height:.4f} m")
     print(f"  CoM fore/aft offset  = {chassis_com[0]:+.4f} m "
           f"(equilibrium lean {math.degrees(math.atan2(chassis_com[0], max(com_height, 1e-6))):+.1f} deg)")
     print(f"  CoM lateral offset   = {chassis_com[1]:+.4f} m "
-          "(wheel half-track is 0.129 m)")
+          f"(wheel half-track is {WHEEL_HALF_TRACK_M:.3f} m)")
 
     if args.check_model:
         check_against_model()

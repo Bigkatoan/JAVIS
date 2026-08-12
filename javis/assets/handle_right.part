@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "dc9da444eab67f171aca63bc",
-    "documentMicroversion": "643e6000326530541d115209",
-    "elementId": "5523057e4cdb14d6aeab5b3c",
+    "documentMicroversion": "c31aa401f58aa4e1dc42cb41",
+    "elementId": "83d245e5121f35a5b2259477",
     "fullConfiguration": "default",
-    "id": "MXLuFQKKBH1zmSxJX",
+    "id": "MKDk/oamrG+1ECKRe",
     "isStandardContent": false,
-    "name": "Body41 <1>",
-    "partId": "JFD",
+    "name": "handle_right <1>",
+    "partId": "RmBP",
     "suppressed": false,
     "type": "Part"
 }
