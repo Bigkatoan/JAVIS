@@ -1,0 +1,73 @@
+# PPO on Javis-Balance-v0 (javis/gym_env.py's plain-MuJoCo balance/twist-
+# tracking task under randomized mass/CoM/payload -- see that module's
+# docstring). obs=384 (24-frame history x 16), act=2 (wheel velocity targets).
+#
+# Register the env id and launch with scripts/train_srl.py, not srl-train
+# directly -- that script imports javis.gym_env first, which is what
+# registers "Javis-Balance-v0" with gymnasium:
+#
+#   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_balance_ppo.yaml \
+#       --env Javis-Balance-v0 --algo ppo --device cpu
+
+env_id: "Javis-Balance-v0"
+env_type: "flat"
+
+algo: ppo
+
+encoders:
+  # One shared encoder, not separate actor/critic encoders: with a single
+  # obs key ("state", GymnasiumWrapper's default) and >1 encoder, an
+  # explicit input_name is needed to route it -- but srl/cli/train.py's
+  # on-policy rollout loop remaps obs -> encoder names BEFORE calling
+  # agent.predict(), and agent_model.py's forward() remaps AGAIN internally
+  # expecting the ORIGINAL "state" key, which no longer exists after the
+  # first pass (it's been renamed to the encoder name already). That double
+  # remap raises KeyError for any config with `input_name` set. A single
+  # encoder sidesteps it entirely: Case 2 ("single obs -> single encoder
+  # rename") renames "state" -> this encoder's name on the first pass, and
+  # the second pass's Case 1 ("key already equals encoder name") is then a
+  # no-op, since both keys already match.
+  - name: state_enc
+    type: mlp
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: elu, norm: none}
+      - {out_features: 256, activation: elu, norm: none}
+
+flows:
+  - "state_enc -> actor"
+  - "state_enc -> critic"
+
+actor:
+  name: actor
+  type: gaussian
+  action_dim: 2
+  log_std_init: -1.0
+  layers:
+    - {out_features: 128, activation: elu, norm: none}
+
+critic:
+  name: critic
+  type: value
+  layers:
+    - {out_features: 128, activation: elu, norm: none}
+
+losses:
+  - {name: policy,  weight: 1.0}
+  - {name: value,   weight: 1.0}
+  - {name: entropy, weight: 0.005}
+
+train:
+  total_steps: 2_000_000
+  n_envs: 16
+  n_steps: 24
+  batch_size: 384
+  n_epochs: 5
+  lr: 1e-3
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  entropy_coef: 0.005
+  vf_coef: 1.0
+  max_grad_norm: 1.0

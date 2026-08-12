@@ -322,6 +322,39 @@ small) -- neighbors in the same batched sim, each with its own randomized
 mass/CoM/payload/terrain tile from the task's own domain randomization, not
 a scripted scenario list.
 
+## Alternative #3: training through github.com/Bigkatoan/SRL
+
+[SRL](https://github.com/Bigkatoan/SRL) is a separate YAML-first RL library
+(PPO/SAC/DDPG/TD3/A2C/A3C, its own CLI). It resolves environments through
+plain `gymnasium.make(id)`, so hooking it up to `javis/gym_env.py`'s
+`JavisBalanceEnv` needed no changes on SRL's side: importing
+`javis.gym_env` registers `Javis-Balance-v0` with gymnasium's own registry
+(see that module's bottom), and `scripts/train_srl.py` is a two-line
+launcher that does that import and then hands off to SRL's own CLI `main()`
+unchanged.
+
+```bash
+uv pip install --python .venv/bin/python -e ".[srl]"   # pulls srl-rl from GitHub, not PyPI
+
+.venv/bin/python scripts/train_srl.py --config configs/srl/javis_balance_ppo.yaml \
+    --env Javis-Balance-v0 --algo ppo --device cpu
+.venv/bin/python scripts/train_srl.py --config configs/srl/javis_balance_sac.yaml \
+    --env Javis-Balance-v0 --algo sac --device cpu
+```
+
+`configs/srl/javis_balance_{ppo,sac}.yaml` both use a single shared encoder
+feeding both actor and critic, not SRL's own example configs' pattern of two
+separate encoders — that pattern hits a real bug in SRL itself when the env
+has one observation key and the config uses `>1` encoders with explicit
+`input_name`: `srl/cli/train.py`'s rollout loop remaps the obs dict to
+encoder names *before* calling `agent.predict()`, and `agent_model.py`'s
+`forward()` remaps it *again* internally expecting the original key, which
+no longer exists after the first pass → `KeyError`. A single shared encoder
+sidesteps it: the first remap renames the obs key to the encoder's name, and
+the second pass's "key already matches an encoder name" rule is then a
+no-op. Verified both configs train end-to-end (score climbing, no errors)
+before committing them.
+
 ## Simulation notes / known gaps
 
 - **The ODrive velocity gains on the hardware cannot balance this robot.**

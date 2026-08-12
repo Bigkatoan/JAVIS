@@ -120,11 +120,13 @@ pyyaml==6.0.3
 requests==2.34.2
 rich==14.3.4
 rsl-rl-lib==5.4.0
+safetensors==0.8.0
 scipy==1.17.1
 sentry-sdk==2.66.1
 setuptools==84.0.0
 six==1.17.0
 smmap==5.0.3
+srl-rl @ git+https://github.com/Bigkatoan/SRL.git@706389584611dd92819609b9d01905a008af53c5
 stable-baselines3==2.9.0
 stack-data==0.6.3
 sympy==1.14.0
