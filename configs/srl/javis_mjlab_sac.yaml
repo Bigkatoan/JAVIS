@@ -1,0 +1,73 @@
+# SAC on the real mjlab task, through SRL's mjlab backend. See
+# javis_mjlab_ppo.yaml's header for how --n-envs/env_type differ from the
+# plain-MuJoCo configs.
+#
+#   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_sac.yaml \
+#       --env Javis-Payload-Rough --device cuda --n-envs 512
+
+env_id: "Javis-Payload-Rough"
+env_type: "mjlab"
+
+algo: sac
+
+encoders:
+  - name: actor_state_enc
+    type: mlp
+    input_name: actor
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: relu, norm: layer_norm}
+      - {out_features: 256, activation: relu, norm: layer_norm}
+  - name: critic_state_enc
+    type: mlp
+    input_name: actor
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: relu, norm: layer_norm}
+      - {out_features: 256, activation: relu, norm: layer_norm}
+
+flows:
+  - "actor_state_enc -> actor"
+  - "critic_state_enc -> critic"
+
+actor:
+  name: actor
+  type: squashed_gaussian
+  action_dim: 2
+  log_std_min: -5.0
+  log_std_max: 2.0
+  layers:
+    - {out_features: 128, activation: relu, norm: layer_norm}
+
+critic:
+  name: critic
+  type: twin_q
+  action_dim: 2
+  layers:
+    - {out_features: 128, activation: relu, norm: layer_norm}
+
+losses:
+  - {name: sac_q,           weight: 1.0}
+  - {name: sac_policy,      weight: 1.0}
+  - {name: sac_temperature, weight: 1.0}
+
+train:
+  total_steps: 2_000_000
+  n_envs: 512
+  lr_actor: 3e-4
+  lr_critic: 3e-4
+  lr_alpha: 3e-4
+  buffer_size: 1_000_000
+  batch_size: 256
+  gamma: 0.99
+  tau: 0.005
+  alpha: 0.2
+  auto_entropy_tuning: true
+  start_steps: 10_000
+  update_after: 5_000
+  update_every: 512
+  gradient_steps: 512
+  replay_n_step: 1
+  use_fp16: false

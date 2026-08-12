@@ -34,10 +34,18 @@ gym = [
   "matplotlib",
 ]
 
-# github.com/Bigkatoan/SRL as a third training backend for javis/gym_env.py's
-# Javis-Balance-v0 (registered at import time -- see that module's bottom),
-# via scripts/train_srl.py + configs/srl/*.yaml. Not on PyPI, so a git URL;
-# needs `gymnasium` too but that's already declared under `gym` above.
+# github.com/Bigkatoan/SRL as a third training backend, via
+# configs/srl/*.yaml. Not on PyPI, so a git URL. Two flavors:
+#   javis_balance_{ppo,sac}.yaml -- javis/gym_env.py's Javis-Balance-v0
+#     (registered at import time, see that module's bottom), launched via
+#     scripts/train_srl.py. Needs `gymnasium` too (declared under `gym`).
+#   javis_mjlab_{ppo,sac}.yaml -- the real mjlab task, via SRL's mjlab
+#     backend (srl-train --env mjlab:<task>). Needs `sim` too (declared
+#     above) for mjlab itself.
+# main now has everything the mjlab-integration branch had (merged), plus a
+# full release-stabilization pass on top: the truncated/terminated bootstrap
+# fix, a PPO/A2C/A3C action-re-evaluation fix, and the new `--visualize` flag
+# (srl-train --visualize watches one live env while training runs headless).
 srl = [
   "srl-rl @ git+https://github.com/Bigkatoan/SRL.git",
   "gymnasium",
