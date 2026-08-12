@@ -61,14 +61,19 @@ def _read_progress(log_dir: Path) -> dict[str, np.ndarray]:
 
 
 def _read_monitors(log_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  """Concatenate every monitor_*.monitor.csv, sorted by wall-clock time.
+  """Concatenate every *.monitor.csv, sorted by wall-clock time.
+
+  Two naming conventions, both matched by the same "*.monitor.csv" glob:
+  scripts/train_gym.py's SubprocVecEnv writes one `monitor_<rank>.monitor.csv`
+  per OS-process env; scripts/train_gym_mjlab.py's single-process VecMonitor
+  (wrapping the GPU-batched mjlab env) writes just one `monitor.monitor.csv`.
 
   Returns (episode_time_s, reward, length), all sorted by time so the plot
   reads as "training progressed" even though episodes across parallel envs
   finish interleaved.
   """
   times, rewards, lengths = [], [], []
-  for path in sorted(glob.glob(str(log_dir / "monitor_*.monitor.csv"))):
+  for path in sorted(glob.glob(str(log_dir / "*.monitor.csv"))):
     with open(path, newline="") as f:
       next(f)  # SB3's Monitor header comment line, e.g. {"t_start": ...}
       for row in csv.DictReader(f):
@@ -128,7 +133,7 @@ def main() -> None:
     _plot_series(ep_t, ep_l, "training time (s)", "episode length (control steps)",
                  "Episode length", log_dir / "episode_length.png", _GREEN, window=window)
   else:
-    print("  no monitor_*.monitor.csv found (no episode finished yet?) -- skipping reward/length plots")
+    print("  no *.monitor.csv found (no episode finished yet?) -- skipping reward/length plots")
 
   # "Value loss" axis: PPO's train/value_loss, or SAC/TD3/DDPG's
   # train/critic_loss -- whichever the algorithm actually logged.

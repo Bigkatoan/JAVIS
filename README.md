@@ -280,6 +280,48 @@ space); `scripts/train_gym.py --algo` currently wires up PPO (on-policy) and
 SAC/TD3/DDPG (off-policy, replay buffer, `gradient_steps=num_envs` so the
 update-to-data ratio matches running one env at `train_freq=1`).
 
+## Alternative #2: the real mjlab task through Gymnasium/stable-baselines3
+
+`javis/gym_env_mjlab.py` splits the difference between the two options
+above: `stable-baselines3` + terminal/CSV-only logging like
+`javis/gym_env.py`, but running the ACTUAL `javis/balance_task.py` task
+(GPU-batched physics, the real terrain generator, mjlab's own renderer --
+skybox, shadows, reflections, the built-in target-vs-actual velocity
+`debug_vis`) instead of the plain-`mujoco` reimplementation. Reach for this
+one when the plain-MuJoCo pipeline's flatter rendering isn't good enough
+(video review, presentations) or when its CPU-only throughput is the
+bottleneck and a GPU is available.
+
+```bash
+uv pip install --python .venv/bin/python -e ".[sim,gym]"   # needs BOTH extras -- mjlab (sim) + stable-baselines3 (gym)
+
+.venv/bin/python scripts/train_gym_mjlab.py --algo ppo --num-envs 4096 --total-timesteps 20000000
+.venv/bin/python scripts/train_gym_mjlab.py --algo sac --num-envs 512  --total-timesteps 2000000   # or td3 / ddpg
+
+.venv/bin/python scripts/record_gym_mjlab_video.py --checkpoint <run>/model_final.zip --algo sac
+```
+
+The engineering problem this solves: mjlab's `ManagerBasedRlEnv` is already
+GPU-batched over `num_envs` (torch tensors, one CUDA context), while SB3's
+`VecEnv` API is numpy-based with the same shape convention but assumes the
+parallelism comes from N separate env instances (normally N OS processes via
+`SubprocVecEnv`). `JavisMjlabVecEnv` is a thin numpy&harr;torch translation
+layer over the ALREADY-batched env, not N processes -- so `--num-envs` here
+means mjlab-sized (hundreds to thousands, all in one process), not
+`train_gym.py`'s SubprocVecEnv-sized tens. It also sets `auto_reset=False`
+and drives resets itself, which is required for correctness: mjlab's default
+auto-reset silently swaps in the next episode's first observation with no
+way to recover the true terminal one, and SB3 needs that true terminal
+observation (`infos[i]["terminal_observation"]`) to bootstrap value
+estimates correctly across an episode boundary.
+
+`train_gym_mjlab.py` auto-plots and auto-records a video when training
+finishes, same as `train_gym.py` (`--no-plot` / `--no-video` to skip).
+`record_gym_mjlab_video.py` shows several robots at once (`--num-envs`,
+small) -- neighbors in the same batched sim, each with its own randomized
+mass/CoM/payload/terrain tile from the task's own domain randomization, not
+a scripted scenario list.
+
 ## Simulation notes / known gaps
 
 - **The ODrive velocity gains on the hardware cannot balance this robot.**
