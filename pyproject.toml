@@ -46,8 +46,21 @@ gym = [
 # full release-stabilization pass on top: the truncated/terminated bootstrap
 # fix, a PPO/A2C/A3C action-re-evaluation fix, and the new `--visualize` flag
 # (srl-train --visualize watches one live env while training runs headless).
+#
+# TEMPORARY: pinned to `integration/javis-training` instead of `main` --
+# this branch merges 15 fix branches from a second stabilization pass (all
+# open as separate PRs on SRL, not yet merged to main) that are directly
+# relevant to training the real mjlab task:
+#   - --visualize + periodic eval crashing training with a CUDA graph
+#     capture race (this is what caused the "environments repeatedly
+#     reinitializing, threads running all over the place" symptom)
+#   - --resume crashing on CUDA (RNG state left on the wrong device)
+#   - duplicate [eval] console lines/metrics.jsonl rows whenever
+#     total_steps is an exact multiple of eval_freq
+# Repoint this at `main` once those PRs land there and re-run `pip install
+# -e ".[srl]"` (or the sim/mjlab-lock equivalent) to pick up the merge.
 srl = [
-  "srl-rl @ git+https://github.com/Bigkatoan/SRL.git",
+  "srl-rl @ git+https://github.com/Bigkatoan/SRL.git@integration/javis-training",
   "gymnasium",
 ]
 
