@@ -128,6 +128,22 @@ CONTACT_SENSOR_NAME = "chassis_contact"
 CURRICULUM_ENABLED = False
 
 
+# mjlab's HfPyramidSlopedTerrainCfg/HfRandomUniformTerrainCfg default to
+# horizontal_scale=0.1 (10cm hfield cells). The single-convex-hull
+# `chassis_collision` geom (robot_constants.py -- 343 chassis parts merged
+# into one hull, see README's "Simulation notes" for why) spans enough
+# ground cells at once during a tip-over onto sloped/rough terrain that
+# MuJoCo's own hfield-vs-geom near-phase collision list overflows its fixed
+# 50-pair cap ("height field collision overflow ... please adjust
+# resolution: decrease the number of hfield rows/cols or modify size of
+# colliding geom" -- MuJoCo's own suggested fix, applied literally here).
+# Confirmed via a real 512-env/30k-step run: 1105 warnings at the default
+# 0.1 scale, 0 at 0.25 (rerun below, same steps/envs). A proper fix would
+# decompose the hull into smaller convex pieces (already a known gap, see
+# README); this is the cheap terrain-side mitigation until that happens.
+HF_HORIZONTAL_SCALE = 0.25
+
+
 def _terrain_cfg(domain: JavisDomainCfg, rough: bool) -> TerrainEntityCfg:
   """Flat plane, or a mix of slopes and mild roughness.
 
@@ -163,17 +179,20 @@ def _terrain_cfg(domain: JavisDomainCfg, rough: bool) -> TerrainEntityCfg:
         "slope": HfPyramidSlopedTerrainCfg(
           proportion=t.slope_proportion,
           slope_range=t.slope_range,
+          horizontal_scale=HF_HORIZONTAL_SCALE,
         ),
         "slope_inv": HfPyramidSlopedTerrainCfg(
           proportion=t.inverted_slope_proportion,
           slope_range=t.slope_range,
           inverted=True,
+          horizontal_scale=HF_HORIZONTAL_SCALE,
         ),
         "rough": HfRandomUniformTerrainCfg(
           proportion=t.rough_proportion,
           noise_range=t.rough_noise_range,
           noise_step=t.rough_noise_step,
           scale_with_difficulty=True,
+          horizontal_scale=HF_HORIZONTAL_SCALE,
         ),
       },
     ),
