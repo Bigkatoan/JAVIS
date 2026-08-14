@@ -49,7 +49,6 @@ importlib-metadata==9.0.0
 invoke==2.2.1
 ipython==9.16.1
 ipython-pygments-lexers==1.1.1
--e file:///home/ubuntu/antd/JAVIS
 jedi==0.20.0
 jinja2==3.1.6
 kiwisolver==1.5.0
