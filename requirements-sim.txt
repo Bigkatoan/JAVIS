@@ -1,13 +1,13 @@
 # Locked workstation (x86_64 + CUDA) environment for the simulation branch.
-# Generated with: uv pip freeze --python .venv/bin/python
+# Generated with: .venv/bin/pip freeze
 #
 # NOT for the Jetson -- requirements.txt is the aarch64/JetPack freeze and
 # includes the ROS2 / Isaac ROS stack this file deliberately omits.
 #
 # Recreate with:
-#   uv venv --python 3.11 .venv
-#   uv pip install --python .venv/bin/python -r requirements-sim.txt
-#   uv pip install --python .venv/bin/python -e . --no-deps
+#   python3.11 -m venv .venv
+#   .venv/bin/pip install -r requirements-sim.txt
+#   .venv/bin/pip install -e . --no-deps
 #
 absl-py==2.5.0
 annotated-types==0.8.0
