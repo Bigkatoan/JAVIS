@@ -1,0 +1,68 @@
+# SAC on Javis-Balance-v0. See javis_balance_ppo.yaml's header for the env
+# and how to register/launch it (scripts/train_srl.py, not srl-train
+# directly).
+#
+#   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_balance_sac.yaml \
+#       --env Javis-Balance-v0 --algo sac --device cpu
+
+env_id: "Javis-Balance-v0"
+env_type: "flat"
+
+algo: sac
+
+encoders:
+  # One shared encoder -- see javis_balance_ppo.yaml's comment for why
+  # (separate actor/critic encoders + explicit input_name trips a double
+  # remap bug between srl/cli/train.py's rollout loop and
+  # agent_model.py's forward(); a single encoder sidesteps it).
+  - name: state_enc
+    type: mlp
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: relu, norm: layer_norm}
+      - {out_features: 256, activation: relu, norm: layer_norm}
+
+flows:
+  - "state_enc -> actor"
+  - "state_enc -> critic"
+
+actor:
+  name: actor
+  type: squashed_gaussian
+  action_dim: 2
+  log_std_min: -5.0
+  log_std_max: 2.0
+  layers:
+    - {out_features: 128, activation: relu, norm: layer_norm}
+
+critic:
+  name: critic
+  type: twin_q
+  action_dim: 2
+  layers:
+    - {out_features: 128, activation: relu, norm: layer_norm}
+
+losses:
+  - {name: sac_q,           weight: 1.0}
+  - {name: sac_policy,      weight: 1.0}
+  - {name: sac_temperature, weight: 1.0}
+
+train:
+  total_steps: 500_000
+  n_envs: 16
+  lr_actor: 3e-4
+  lr_critic: 3e-4
+  lr_alpha: 3e-4
+  buffer_size: 300_000
+  batch_size: 256
+  gamma: 0.99
+  tau: 0.005
+  alpha: 0.2
+  auto_entropy_tuning: true
+  start_steps: 5_000
+  update_after: 1_000
+  update_every: 16
+  gradient_steps: 16
+  replay_n_step: 1
+  use_fp16: false

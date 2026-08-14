@@ -1,0 +1,96 @@
+{
+  "checkpoint": "logs/rsl_rl/javis_payload_flat/2026-08-10_11-03-29/model_1499.pt",
+  "onnx": "logs/rsl_rl/javis_payload_flat/2026-08-10_11-03-29/model_1499.onnx",
+  "control_rate_hz": 50.0,
+  "observation": {
+    "total_dim": 192,
+    "history_length": 12,
+    "layout": "TERM-major: each term contributes its whole history as one contiguous block, then the blocks are concatenated. Within a block, frames run oldest to newest. NOT a sequence of frames.",
+    "terms": [
+      {
+        "name": "base_lin_vel",
+        "slice": [
+          0,
+          36
+        ],
+        "width": 36,
+        "values_per_frame": 3,
+        "frames": 12,
+        "frame_order": "oldest first; the last block is the current step"
+      },
+      {
+        "name": "base_ang_vel",
+        "slice": [
+          36,
+          72
+        ],
+        "width": 36,
+        "values_per_frame": 3,
+        "frames": 12,
+        "frame_order": "oldest first; the last block is the current step"
+      },
+      {
+        "name": "projected_gravity",
+        "slice": [
+          72,
+          108
+        ],
+        "width": 36,
+        "values_per_frame": 3,
+        "frames": 12,
+        "frame_order": "oldest first; the last block is the current step"
+      },
+      {
+        "name": "wheel_vel",
+        "slice": [
+          108,
+          132
+        ],
+        "width": 24,
+        "values_per_frame": 2,
+        "frames": 12,
+        "frame_order": "oldest first; the last block is the current step"
+      },
+      {
+        "name": "actions",
+        "slice": [
+          132,
+          156
+        ],
+        "width": 24,
+        "values_per_frame": 2,
+        "frames": 12,
+        "frame_order": "oldest first; the last block is the current step"
+      },
+      {
+        "name": "command",
+        "slice": [
+          156,
+          192
+        ],
+        "width": 36,
+        "values_per_frame": 3,
+        "frames": 12,
+        "frame_order": "oldest first; the last block is the current step"
+      }
+    ],
+    "note": "Normalization is baked into the exported graph -- feed raw observations, exactly as listed, in this order. Zero-fill the history on startup; the policy was trained with buffers that start at zero after every reset."
+  },
+  "action": {
+    "dim": 2,
+    "order": [
+      "left_wheel",
+      "right_wheel"
+    ],
+    "meaning": "wheel velocity target",
+    "units": "rad/s after multiplying the network output by `scale`",
+    "scale": 5.0,
+    "wheel_radius_m": 0.098,
+    "to_odrive_input_vel": "input_vel [turn/s] = target [rad/s] / (2*pi); the drivetrain is 1:1, so no gear ratio is applied (SIM2REAL.md sec 3)."
+  },
+  "parity": {
+    "max_abs_diff": 2.1457672119140625e-06,
+    "tolerance": 0.0001,
+    "ok": true
+  }
+}

@@ -1,0 +1,78 @@
+# PPO on the REAL mjlab task (javis/balance_task.py's Javis-Payload-Rough),
+# through SRL's new mjlab backend (srl/cli/train.py's "mjlab" env_type) --
+# GPU-batched in one process, no real Isaac Sim/isaaclab install needed.
+# obs=384 ("actor" group), act=2 (wheel velocity targets).
+#
+#   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_ppo.yaml \
+#       --env Javis-Payload-Rough --device cuda --n-envs 4096
+#
+# --n-envs here is mjlab-sized (hundreds to thousands, GPU-batched inside
+# one process), not the SubprocVecEnv-sized tens javis_balance_ppo.yaml (the
+# plain-MuJoCo config) uses -- see javis/gym_env_mjlab.py's docstring for why
+# that distinction matters. env_type: mjlab is what makes srl-train skip its
+# own SyncVectorEnv/AsyncVectorEnv wrapping and build one already-batched env
+# instead (same reasoning SRL already applies to real Isaac Lab envs).
+
+env_id: "Javis-Payload-Rough"
+env_type: "mjlab"
+
+algo: ppo
+
+encoders:
+  # Two separate encoders (not a shared one, unlike javis_balance_ppo.yaml)
+  # since input_name is what selects mjlab's "actor" observation group out
+  # of the two it publishes ("actor", "critic" -- the privileged group SRL
+  # has no asymmetric actor-critic slot for, so it's simply not read here).
+  - name: actor_state_enc
+    type: mlp
+    input_name: actor
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: elu, norm: none}
+      - {out_features: 256, activation: elu, norm: none}
+  - name: critic_state_enc
+    type: mlp
+    input_name: actor
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: elu, norm: none}
+      - {out_features: 256, activation: elu, norm: none}
+
+flows:
+  - "actor_state_enc -> actor"
+  - "critic_state_enc -> critic"
+
+actor:
+  name: actor
+  type: gaussian
+  action_dim: 2
+  log_std_init: -1.0
+  layers:
+    - {out_features: 128, activation: elu, norm: none}
+
+critic:
+  name: critic
+  type: value
+  layers:
+    - {out_features: 128, activation: elu, norm: none}
+
+losses:
+  - {name: policy,  weight: 1.0}
+  - {name: value,   weight: 1.0}
+  - {name: entropy, weight: 0.005}
+
+train:
+  total_steps: 20_000_000
+  n_envs: 4096
+  n_steps: 24
+  batch_size: 16384
+  n_epochs: 5
+  lr: 1e-3
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  entropy_coef: 0.005
+  vf_coef: 1.0
+  max_grad_norm: 1.0
