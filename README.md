@@ -66,10 +66,14 @@ Training runs on an x86_64 + CUDA machine, not the Jetson. `requirements.txt`
 is the aarch64 freeze and will not install there; use `requirements-sim.txt`:
 
 ```bash
-uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python -r requirements-sim.txt
-uv pip install --python .venv/bin/python -e . --no-deps
+python3.11 -m venv .venv
+.venv/bin/pip install -r requirements-sim.txt
+.venv/bin/pip install -e . --no-deps
 ```
+
+(No `python3.11` on `PATH`? `python3 -m venv .venv` works too, as long as
+that's Python 3.10 or 3.11 -- `requirements-sim.txt` was frozen against 3.11
+specifically, and `requires-python = ">=3.10"` in `pyproject.toml`.)
 
 Equivalently `pip install -e '.[sim]'` for unpinned versions. Verified on an
 RTX 3090 with mjlab 1.5.3 / mujoco 3.10.0 / torch 2.13.0+cu130.
@@ -254,7 +258,7 @@ MuJoCo-Warp GPU batching), a standard `gymnasium.Env` interface, and
 tensorboard, no wandb.
 
 ```bash
-uv pip install --python .venv/bin/python -e ".[gym]"
+.venv/bin/pip install -e ".[gym]"
 
 .venv/bin/python scripts/train_gym.py --algo ppo --num-envs 16 --total-timesteps 2000000
 .venv/bin/python scripts/train_gym.py --algo sac --num-envs 8  --total-timesteps 500000   # or td3 / ddpg
@@ -293,7 +297,7 @@ one when the plain-MuJoCo pipeline's flatter rendering isn't good enough
 bottleneck and a GPU is available.
 
 ```bash
-uv pip install --python .venv/bin/python -e ".[sim,gym]"   # needs BOTH extras -- mjlab (sim) + stable-baselines3 (gym)
+.venv/bin/pip install -e ".[sim,gym]"   # needs BOTH extras -- mjlab (sim) + stable-baselines3 (gym)
 
 .venv/bin/python scripts/train_gym_mjlab.py --algo ppo --num-envs 4096 --total-timesteps 20000000
 .venv/bin/python scripts/train_gym_mjlab.py --algo sac --num-envs 512  --total-timesteps 2000000   # or td3 / ddpg
@@ -334,7 +338,7 @@ launcher that does that import and then hands off to SRL's own CLI `main()`
 unchanged.
 
 ```bash
-uv pip install --python .venv/bin/python -e ".[srl]"   # pulls srl-rl from GitHub, not PyPI
+.venv/bin/pip install -e ".[srl]"   # pulls srl-rl from GitHub, not PyPI
 
 .venv/bin/python scripts/train_srl.py --config configs/srl/javis_balance_ppo.yaml \
     --env Javis-Balance-v0 --algo ppo --device cpu
