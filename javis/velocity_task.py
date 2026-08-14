@@ -38,11 +38,11 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.velocity import mdp as velocity_mdp
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from .mdp import commands as javis_commands
 from .robot_constants import WHEEL_COLLISION_GEOMS, get_javis_robot_cfg
 
 _ROBOT = SceneEntityCfg("robot")
@@ -118,13 +118,16 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   ##
 
   commands: dict[str, CommandTermCfg] = {
-    "twist": UniformVelocityCommandCfg(
+    # JavisVelocityCommandCfg, not mjlab's UniformVelocityCommandCfg directly:
+    # same term, patched to not crash the Viser web viewer's joystick GUI when
+    # an axis's range is zero-width -- see javis/mdp/commands.py.
+    "twist": javis_commands.JavisVelocityCommandCfg(
       entity_name="robot",
       resampling_time_range=(3.0, 8.0),
       rel_standing_envs=0.2,  # some envs must learn to just balance in place
       heading_command=False,
       debug_vis=True,
-      ranges=UniformVelocityCommandCfg.Ranges(
+      ranges=javis_commands.JavisVelocityCommandCfg.Ranges(
         lin_vel_x=(-0.5, 0.5),
         lin_vel_y=(0.0, 0.0),
         ang_vel_z=(-1.0, 1.0),
@@ -196,7 +199,7 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       mode="startup",
       func=dr.body_com_offset,
       params={
-        "asset_cfg": SceneEntityCfg("robot", body_names=("body",)),
+        "asset_cfg": SceneEntityCfg("robot", body_names=("base_link",)),
         "operation": "add",
         "ranges": {0: (-0.02, 0.02), 1: (-0.02, 0.02), 2: (-0.03, 0.03)},
       },
@@ -232,7 +235,7 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # (wrong shape) rather than falling back to the root -- passing the
         # chassis body by name is the "Set per-robot" override
         # mjlab/tasks/velocity/velocity_env_cfg.py leaves blank upstream.
-        "asset_cfg": SceneEntityCfg("robot", body_names=("body",)),
+        "asset_cfg": SceneEntityCfg("robot", body_names=("base_link",)),
       },
     ),
     "is_alive": RewardTermCfg(func=envs_mdp.is_alive, weight=0.5),
@@ -269,7 +272,7 @@ def _make_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     viewer=ViewerConfig(
       origin_type=ViewerConfig.OriginType.ASSET_BODY,
       entity_name="robot",
-      body_name="body",
+      body_name="base_link",
       distance=1.5,
       elevation=-20.0,
       azimuth=90.0,

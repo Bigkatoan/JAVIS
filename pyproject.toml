@@ -3,7 +3,57 @@ name = "javis"
 version = "0.1.0"
 description = "JAVIS rover: Onshape CAD -> URDF -> mjlab simulation"
 requires-python = ">=3.10"
+# Intentionally empty: on the Jetson, `javis` is installed with
+# `pip install -e . --no-deps` into an environment whose mjlab / torch / ROS2
+# stack is already built for aarch64. Declaring them here would let pip try to
+# "fix" that.
 dependencies = []
+
+[project.optional-dependencies]
+# Workstation training and evaluation (x86_64 + CUDA). See requirements-sim.txt
+# for the exact locked versions this branch was verified against.
+sim = [
+  "mjlab==1.5.3",
+  "trimesh",
+  "matplotlib",
+  "imageio[ffmpeg]",
+  "onnx",
+  "onnxruntime",
+  "tensorboard",
+  "scipy",
+]
+
+# Lightweight companion to `sim`: javis/gym_env.py + scripts/train_gym.py.
+# Deliberately does not pull in mjlab/tensorboard/wandb -- plain mujoco +
+# gymnasium + stable-baselines3, terminal/CSV logging only. `trimesh` isn't
+# listed again here because it's already required transitively by
+# javis.mass_model, which gym_env.py imports.
+gym = [
+  "gymnasium",
+  "stable-baselines3",
+  "matplotlib",
+]
+
+# github.com/Bigkatoan/SRL as a third training backend, via
+# configs/srl/*.yaml. Not on PyPI, so a git URL. Two flavors:
+#   javis_balance_{ppo,sac}.yaml -- javis/gym_env.py's Javis-Balance-v0
+#     (registered at import time, see that module's bottom), launched via
+#     scripts/train_srl.py. Needs `gymnasium` too (declared under `gym`).
+#   javis_mjlab_{ppo,sac}.yaml -- the real mjlab task, via SRL's mjlab
+#     backend (srl-train --env mjlab:<task>). Needs `sim` too (declared
+#     above) for mjlab itself.
+# main now has everything the mjlab-integration branch had (merged), plus a
+# full release-stabilization pass on top: the truncated/terminated bootstrap
+# fix, a PPO/A2C/A3C action-re-evaluation fix, the new `--visualize` flag
+# (srl-train --visualize watches one live env while training runs headless),
+# and the per-env (not batched) action_dim fix that SAC/DDPG/TD3 need on
+# isaaclab/mjlab. The `integration/javis-training` branch this was
+# temporarily pinned to is now stale -- it predates that action_dim fix --
+# so this points at `main` again like it originally did.
+srl = [
+  "srl-rl @ git+https://github.com/Bigkatoan/SRL.git",
+  "gymnasium",
+]
 
 [project.entry-points."mjlab.tasks"]
 javis = "javis.tasks"
