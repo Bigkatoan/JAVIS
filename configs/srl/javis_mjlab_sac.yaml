@@ -4,6 +4,14 @@
 #
 #   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_sac.yaml \
 #       --env Javis-Payload-Rough --device cuda --n-envs 512
+#
+# `train.use_async`/`use_gpu_buffer` below (SRL's AsyncOffPolicyRunner) need
+# Bigkatoan/SRL#31 merged -- pyproject.toml's `srl` extra tracks SRL's `main`
+# unpinned, so until that PR lands, these two keys are silently inert (the
+# bug #31 fixes) and training just runs the old blocking-sync loop instead,
+# unchanged in behavior but not in a way that errors -- reinstall srl-rl
+# (`uv pip install --python .venv/bin/python -e ".[srl]" --reinstall-package
+# srl-rl`) once it's merged before relying on the speedup below.
 
 env_id: "Javis-Payload-Rough"
 env_type: "mjlab"
@@ -71,3 +79,17 @@ train:
   gradient_steps: 512
   replay_n_step: 1
   use_fp16: false
+  # Overlap gradient updates (background thread, separate CUDA stream) with
+  # env stepping instead of blocking on every `update_every`-step batch, and
+  # keep the replay buffer resident on-device to skip the default buffer's
+  # per-env CPU round-trip. Verified on this exact task/GPU (RTX 3090,
+  # Javis-Payload-Rough): same total training work (SAC's per-update
+  # counter matches the old sync path exactly at both n_envs=16 and
+  # n_envs=512 -- this is not a "trains less, looks faster" shortcut), ~1.5x
+  # wall-clock at n_envs=512 (~1.6x at n_envs=16) versus sync with both
+  # flags off. See Bigkatoan/SRL#31 for the bugs that had to be fixed in
+  # SRL itself before this combination actually worked end to end (the
+  # config keys were previously silently inert, plus real vectorized-env
+  # and GPU-buffer-shape bugs once wired up) -- needs that PR merged.
+  use_async: true
+  use_gpu_buffer: true
