@@ -1,0 +1,166 @@
+# SAC on the real mjlab task, same (batch_size=8192, gradient_steps=16)
+# large-batch/few-update setup as javis_mjlab_sac.yaml, PLUS the changes
+# a full investigation found necessary to make that setup actually stable:
+#
+#   1. `norm: batch_norm` on every actor/critic MLP layer (was `layer_norm`),
+#      + `train.weight_norm_projection: true` -- FlashSAC's (arXiv:2604.04539
+#      section 4.2) two cheapest stability mechanisms. Needs Bigkatoan/SRL's
+#      `feat/flashsac-weight-norm-batchnorm` branch/PR.
+#   2. `train.lr_alpha: 3e-5` (10x lower than javis_mjlab_sac.yaml's 3e-4) --
+#      REQUIRED, not optional. See "Why lr_alpha, not just #1" below.
+#   3. Depends on Bigkatoan/SRL's `fix/sac-actor-only-encoder-never-trains`
+#      (PR #33) being installed too -- a separate, pre-existing bug where
+#      `actor_state_enc` (this config's dedicated actor encoder) never
+#      received a gradient any optimizer consumed, silently frozen at
+#      random init for the whole run. Not required for stability here (the
+#      run below is stable with or without it -- see the investigation
+#      notes), but it's a real correctness bug this config would otherwise
+#      be masking, and BatchNorm's condition below assumes it's applied.
+#
+# ============================================================================
+# Why this combination, and not just #1: a full investigation
+# ============================================================================
+#
+# javis_mjlab_sac.yaml's (8192, 16) config, verified over a real 2M-step run,
+# reaches PPO's eventual quality ~3.4x faster and briefly overshoots to 4-5x
+# higher score, but then DECLINES over the rest of the run, ending worse than
+# where it started -- correlated with auto-entropy alpha collapsing from 0.20
+# to ~0.0002 well before the run ends.
+#
+# Tested in isolation, on the SAME (8192, 16) config, each against a real
+# 2M-step run (n_envs=512, eval-episodes=30):
+#
+#   lr_alpha=3e-4 (unmodified), layer_norm (baseline):
+#       wildly oscillates 1-9 the whole run, never stabilizes, ends 1.30.
+#   lr_alpha=3e-5 alone (unmodified architecture):
+#       peaks ~2.0 at step 500k, then a real ~900k-step decline to ~1.2,
+#       partial late recovery to 1.63 at 2M -- alpha collapse is fixed
+#       (ends at 0.031, not 0.0002), but instability persists.
+#   batch_norm + weight_norm_projection alone (lr_alpha unchanged):
+#       WORSE than doing nothing -- peaks ~2.0 then crashes through
+#       negative territory (-0.42 at step 1.4M), ends 0.31.
+#   batch_norm + weight_norm_projection + the encoder fix, lr_alpha
+#   UNCHANGED: still bad, and in a NEW way -- 3 of 20 eval points showed
+#       genuine numerical explosions (episode returns as extreme as
+#       -1.5e20), traced to `javis/mdp/rewards.py`'s `pitch_rate_l2` (an
+#       unclamped squared angular velocity) combined with a physics
+#       integrator divergence -- a pre-existing JAVIS reward-shaping gap
+#       that a merely-capable actor (this repo's encoder fix gives the
+#       actor real trained features, not frozen random ones) can apparently
+#       find and trigger once entropy regularization has fully collapsed
+#       (alpha near 0 removes the one force discouraging over-exploiting a
+#       possibly-wrong critic into a fragile, physically extreme action).
+#   ALL of the above together (this config): stable across two independent
+#       runs (both with and without the encoder fix layered in) -- no
+#       decline, no crash, no numerical explosions, plateaus around
+#       1.0-1.5, ends at 1.17 in both runs (rolling-mean convergence by
+#       step ~400k / ~160s wall-clock).
+#
+# So lr_alpha is not a nice-to-have on top of the architectural fix -- it is
+# what keeps the architectural fix from being actively harmful. Once alpha
+# stops fully collapsing, the actor never loses its entropy regularization,
+# which appears to be what prevents both the slow decline AND the
+# reward-function-triggering numerical explosions above.
+#
+# ============================================================================
+# The honest limitation: this plateau is BELOW PPO's, not above it
+# ============================================================================
+#
+# PPO (javis_mjlab_ppo.yaml) converges (same rolling-mean criterion) to
+# roughly 2.05 by wall-clock ~475s. This config's plateau (~1.0-1.5, final
+# ~1.17) is reached ~3x faster in wall-clock (~160s) but is meaningfully
+# LOWER than PPO's -- roughly 60% of it. This config is a genuine fix for
+# the instability (fast AND stable, where the unmodified (8192, 16) config
+# was fast but unstable), not a fix that also matches or beats PPO's
+# eventual quality. FlashSAC's paper's full recipe (residual blocks,
+# RMSNorm, a distributional critic with adaptive reward scaling, noise
+# repetition, a unified entropy target) is considerably larger than the two
+# cheapest mechanisms implemented here; closing the remaining gap to PPO's
+# plateau likely needs more of that stack, not just lr_alpha tuning on top
+# of what's here.
+#
+#   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_sac_flashsac.yaml \
+#       --env Javis-Payload-Rough --device cuda --n-envs 512
+
+env_id: "Javis-Payload-Rough"
+env_type: "mjlab"
+
+algo: sac
+
+encoders:
+  - name: actor_state_enc
+    type: mlp
+    input_name: actor
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: relu, norm: batch_norm}
+      - {out_features: 256, activation: relu, norm: batch_norm}
+  - name: critic_state_enc
+    type: mlp
+    input_name: actor
+    input_dim: 384
+    latent_dim: 256
+    layers:
+      - {out_features: 256, activation: relu, norm: batch_norm}
+      - {out_features: 256, activation: relu, norm: batch_norm}
+
+flows:
+  - "actor_state_enc -> actor"
+  - "critic_state_enc -> critic"
+
+actor:
+  name: actor
+  type: squashed_gaussian
+  action_dim: 2
+  log_std_min: -5.0
+  log_std_max: 2.0
+  layers:
+    - {out_features: 128, activation: relu, norm: batch_norm}
+
+critic:
+  name: critic
+  type: twin_q
+  action_dim: 2
+  layers:
+    - {out_features: 128, activation: relu, norm: batch_norm}
+
+losses:
+  - {name: sac_q,           weight: 1.0}
+  - {name: sac_policy,      weight: 1.0}
+  - {name: sac_temperature, weight: 1.0}
+
+train:
+  total_steps: 2_000_000
+  n_envs: 512
+  lr_actor: 3e-4
+  lr_critic: 3e-4
+  # 10x lower than javis_mjlab_sac.yaml's 3e-4 -- REQUIRED for stability
+  # with this combination, not just a speed/quality tweak. See this file's
+  # header comment: without this, batch_norm + weight_norm_projection on
+  # top of (8192, 16) is worse than doing nothing at all (crashes into
+  # negative-score territory, or -- with the actor-encoder fix also
+  # applied -- intermittently produces astronomical-magnitude episode
+  # returns from a pre-existing unclamped reward term). With it, both
+  # tested variants (with and without the encoder fix) ran the full 2M
+  # steps cleanly and stably.
+  lr_alpha: 3e-5
+  buffer_size: 1_000_000
+  gamma: 0.99
+  tau: 0.005
+  alpha: 0.2
+  auto_entropy_tuning: true
+  start_steps: 10_000
+  update_after: 5_000
+  update_every: 512
+  replay_n_step: 1
+  use_fp16: false
+  use_async: true
+  use_gpu_buffer: true
+  # Unchanged from javis_mjlab_sac.yaml -- see that file's comment for the
+  # full rationale/benchmarking behind this pair of numbers.
+  batch_size: 8192
+  gradient_steps: 16
+  # FlashSAC weight normalization (arXiv:2604.04539 section 4.2) -- see
+  # this file's header comment.
+  weight_norm_projection: true
