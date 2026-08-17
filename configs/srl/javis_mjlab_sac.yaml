@@ -6,12 +6,9 @@
 #       --env Javis-Payload-Rough --device cuda --n-envs 512
 #
 # `train.use_async`/`use_gpu_buffer` below (SRL's AsyncOffPolicyRunner) need
-# Bigkatoan/SRL#31 merged -- pyproject.toml's `srl` extra tracks SRL's `main`
-# unpinned, so until that PR lands, these two keys are silently inert (the
-# bug #31 fixes) and training just runs the old blocking-sync loop instead,
-# unchanged in behavior but not in a way that errors -- reinstall srl-rl
-# (`uv pip install --python .venv/bin/python -e ".[srl]" --reinstall-package
-# srl-rl`) once it's merged before relying on the speedup below.
+# Bigkatoan/SRL#31 (merged) -- reinstall srl-rl (`uv pip install --python
+# .venv/bin/python -e ".[srl]" --reinstall-package srl-rl`) if your venv
+# predates that merge.
 
 env_id: "Javis-Payload-Rough"
 env_type: "mjlab"
@@ -68,7 +65,6 @@ train:
   lr_critic: 3e-4
   lr_alpha: 3e-4
   buffer_size: 1_000_000
-  batch_size: 256
   gamma: 0.99
   tau: 0.005
   alpha: 0.2
@@ -76,7 +72,6 @@ train:
   start_steps: 10_000
   update_after: 5_000
   update_every: 512
-  gradient_steps: 512
   replay_n_step: 1
   use_fp16: false
   # Overlap gradient updates (background thread, separate CUDA stream) with
@@ -86,10 +81,30 @@ train:
   # Javis-Payload-Rough): same total training work (SAC's per-update
   # counter matches the old sync path exactly at both n_envs=16 and
   # n_envs=512 -- this is not a "trains less, looks faster" shortcut), ~1.5x
-  # wall-clock at n_envs=512 (~1.6x at n_envs=16) versus sync with both
-  # flags off. See Bigkatoan/SRL#31 for the bugs that had to be fixed in
-  # SRL itself before this combination actually worked end to end (the
-  # config keys were previously silently inert, plus real vectorized-env
-  # and GPU-buffer-shape bugs once wired up) -- needs that PR merged.
+  # wall-clock at n_envs=512 versus sync with both flags off. See
+  # Bigkatoan/SRL#31 for the bugs that had to be fixed in SRL itself before
+  # this combination actually worked end to end.
   use_async: true
   use_gpu_buffer: true
+  # batch_size/gradient_steps: restructured from the SAC-textbook default
+  # (256, 512) to (8192, 16) -- same total samples processed per
+  # update_every cycle (256*512 == 8192*16 == 131_072), just as far fewer,
+  # much bigger update() calls instead of many tiny ones. Verified on this
+  # exact task/GPU: the 512 tiny (batch=256) update() calls per cycle were
+  # each paying a large FIXED per-call cost (Python dispatch, kernel-launch
+  # overhead, 3 separate optimizer.step() calls for actor/critic/alpha)
+  # that swamped the actual FLOPs at that batch size -- consolidating into
+  # 16 big calls amortizes that fixed cost across ~32x more work per call.
+  # Real GPU comparison (50_000 steps, n_envs=512, both with
+  # use_async+use_gpu_buffer on): (256, 512) = 204.4s, (2048, 64) = 39.9s,
+  # (8192, 16) = 23.9s, (32768, 4) = 21.6s -- diminishing returns past
+  # ~8192 as env collection (~4000 fps) starts becoming the bottleneck
+  # instead of gradient compute, so (8192, 16) is picked as the practical
+  # sweet spot rather than the most extreme point tested. NOT verified:
+  # whether this batch/gradient_steps restructuring changes total-env-steps
+  # needed to actually converge (bigger, less-frequent gradient steps could
+  # plausibly need more or fewer total updates than the old (256, 512) --
+  # only wall-clock-per-fixed-amount-of-compute was measured here, not
+  # sample efficiency) -- worth watching on a real long run.
+  batch_size: 8192
+  gradient_steps: 16
