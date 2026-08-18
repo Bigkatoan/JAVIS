@@ -439,33 +439,63 @@ Setup/task-registration mechanics are on SRL's own docs, not repeated here: the
 [JAVIS walkthrough](https://bigkatoan.github.io/SRL/source/integrations/mjlab.html#real-world-example-javis)
 on `bigkatoan.github.io/SRL`.
 
-**Which one to actually use** -- corrected after a real, *full-length* 20M-step
-PPO run exposed a problem the earlier short comparison below missed entirely.
-Neither algorithm currently has a run that's actually verified to hold a good
-policy for the long haul -- **do not treat either config as "done, just
+**Which one to actually use** -- updated after a much deeper investigation
+into the PPO peak-then-decline problem first found in a full-length 20M-step
+run. Neither algorithm currently has a config verified to hold a good policy
+truly flat and indefinitely -- **do not treat either config as "done, just
 train it" for a real robot deployment yet.**
 
-- **PPO (`javis_mjlab_ppo.yaml`) was previously (wrongly) documented here as
-  "the reliable default... holds it, no further tuning needed."** A full
-  20M-step run disproved that: `eval/score_mean` peaks around 1.87 at step
-  ~3.5M, then **declines continuously for the remaining ~16M steps**, ending
-  at 1.06 -- worse than the very first eval point. Root cause under active
-  investigation: PPO's policy entropy (`ppo/entropy` in the console/
-  TensorBoard, logged as *negative* real entropy -- see
-  `srl/losses/rl_losses.py`) collapses from ~2.75 down to near-zero over the
-  run, timed right around the peak, and `GaussianActorHead`'s `log_std_min`
-  defaults to an essentially unbounded `-20.0` with nothing in this config
-  overriding it -- i.e. nothing structurally stops the policy from
-  collapsing into a narrow, brittle, near-deterministic strategy under
-  continuous domain randomization. A higher `entropy_coef` measurably helps
-  (raised the peak to 2.04 in one test) but does not fully stop the later
-  decline by itself -- this is not yet a solved problem, just a diagnosed
-  one. There is also currently **no best-checkpoint mechanism** -- training
-  only saves the *final* checkpoint, so a run like this one loses its actual
-  peak policy with no way to recover it. Don't trust a finished PPO run's
-  final checkpoint without checking the full `eval/score_mean` trajectory
-  first (`runs/ppo_javis_mjlab_ppo/metrics.jsonl`) -- the last checkpoint
-  saved may be well past the best point in training.
+- **The entropy-collapse hypothesis (previous version of this section) was
+  refuted, not confirmed, by follow-up testing.** Raising `entropy_coef` 4x
+  (0.005->0.02) kept policy entropy fully healthy and non-collapsing for an
+  entire 20M-step run (~2.79->~2.91, never eroding) -- and `eval/score_mean`
+  *still* peaked and declined almost identically to the unmodified run.
+  Entropy collapse is a downstream symptom, not the root cause.
+- **Real root cause: nothing bounds how large a single PPO update is allowed
+  to be across a long run.** `PPOConfig.target_kl` (SRL) is a same-epoch
+  early stop only -- it reacts *after* one update already overshot and does
+  nothing to prevent the next one from being just as aggressive. Compare
+  mjlab's own reference PPO training path for this exact task (rsl_rl, via
+  `javis_balance_ppo_runner_cfg` in `javis/balance_task.py`): it uses
+  `schedule="adaptive", desired_kl=0.01` -- a continuous, every-minibatch,
+  whole-run learning-rate schedule keyed on measured KL divergence. SRL's
+  PPO had no equivalent at all until
+  [Bigkatoan/SRL#39](https://github.com/Bigkatoan/SRL/pull/39)
+  (`PPOConfig.lr_schedule: "adaptive"`) added one, and `javis_mjlab_ppo.yaml`
+  now enables it.
+- **This substantially helps but does not fully solve it.** Real-GPU
+  results (RTX 3090, this exact task, peak `eval/score_mean` / step of
+  peak):
+
+  | Config | Peak (step) | Notes |
+  |---|---|---|
+  | Original (unmodified) | 1.87 (3.5M) | The original bug |
+  | `entropy_coef=0.02` alone | 2.04 (5.5M) | Refutes the entropy-collapse hypothesis (see above) |
+  | `target_kl=0.01` (existing weak safeguard) | 2.17 (5.0M) | Slows, doesn't stop, the decline |
+  | `lr_schedule=adaptive`, `max_lr=1e-2` (rsl_rl's raw constant) | 2.12 (4.0M) | **Worse than doing nothing** -- LR sat pinned near 10x this task's tuned base `lr` for nearly the whole run |
+  | `lr_schedule=adaptive`, `max_lr=1e-3` (capped at the tuned base `lr`) | 2.88 (8.5M) | Real, large improvement -- still eventually declines |
+  | Above + `state_dependent_std=false, log_std_init=0.0` (matches rsl_rl's actor exactly) | 3.18 (10M) | Highest peak found; still not a flat hold over a 40M-step run |
+
+  Two open questions flagged for whoever picks this up next, not yet
+  resolved: (1) mjlab's actual rsl_rl reference config trains for
+  `max_iterations=3000 * num_steps_per_env=24 * num_envs=4096` ≈ **295M
+  steps** -- ~15x more than tested here; it's not established whether
+  rsl_rl's own curve is flat that whole time or needs comparably long
+  runway to settle. (2) SRL's `PPO.__init__` declares `_obs_normalizer`/
+  `_ret_normalizer` (`RunningNormalizer`, already implemented in
+  `srl/utils/normalizer.py`) but never actually uses them -- dead
+  scaffolding. rsl_rl's reference config sets `obs_normalization=True` on
+  both actor and critic; SRL's PPO has no equivalent, untested as a lever
+  here.
+- **Best-checkpoint tracking now exists**
+  ([Bigkatoan/SRL#38](https://github.com/Bigkatoan/SRL/pull/38), merged):
+  `save_best: true` (now default-on in `javis_mjlab_ppo.yaml`) saves
+  `best_*.pt` -- the checkpoint at the highest `eval/score_mean` seen so
+  far -- alongside the periodic/final checkpoints, tracked independently so
+  periodic-checkpoint rotation can never evict it. As long as PPO
+  peaks-then-declines rather than holding flat, **always deploy `best_*.pt`,
+  never assume `final_*.pt` is the good one** -- check
+  `runs/<run_name>/metrics.jsonl`'s `eval/score_mean` trajectory regardless.
 - **SAC (`javis_mjlab_sac.yaml`) has the same underlying failure class**
   (entropy/temperature collapse -- SAC's `alpha` here, not PPO's policy std)
   and was investigated first. The default config already has SRL's async
@@ -477,17 +507,16 @@ train it" for a real robot deployment yet.**
   (lower `lr_alpha` + FlashSAC-style weight normalization/BatchNorm, see
   [Bigkatoan/SRL#34](https://github.com/Bigkatoan/SRL/pull/34)) that fixes
   *that* instability -- two independent 2M-step runs plateaued consistently
-  around `eval/score_mean` ≈ 1.2–1.8, no decline -- but that plateau is
-  below PPO's *peak* (1.87-2.04), so it trades quality for reliability, not
-  a strict win either.
-- **Bottom line right now**: PPO can reach a higher score than SAC's
-  stabilized plateau, but only briefly, before degrading past even SAC's
-  level -- and nothing currently catches/saves that peak automatically. SAC
-  is lower but (with the FlashSAC variant) actually holds. Until PPO's
-  entropy-collapse fix and a best-checkpoint mechanism both land, treat any
-  single finished training run's final checkpoint with suspicion -- check
-  the eval trajectory, don't assume "training finished" means "training
-  succeeded."
+  around `eval/score_mean` ≈ 1.2–1.8, no decline -- but that plateau is well
+  below PPO's best verified peak (3.18) with the fixes above, so it trades
+  quality for reliability, not a strict win.
+- **Bottom line right now**: with the adaptive-KL-LR + matched-std fixes,
+  PPO reaches meaningfully higher scores than SAC's stabilized plateau and
+  holds them for longer before degrading -- but "before degrading" is still
+  the operative phrase; nothing tested yet holds indefinitely. Use
+  `--save-best`/`save_best: true` on every real run of either algorithm
+  until one does, and always check the eval trajectory rather than trusting
+  a finished run's final checkpoint by default.
 - A real, unrelated bug this surfaced: `javis/mdp/rewards.py`'s
   `pitch_rate_l2` term squares angular velocity with no clamp. SAC's
   optimized config trains an actor capable enough to occasionally find an
