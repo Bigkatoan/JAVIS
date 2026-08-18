@@ -371,6 +371,54 @@ the second pass's "key already matches an encoder name" rule is then a
 no-op. Verified both configs train end-to-end (score climbing, no errors)
 before committing them.
 
+### The real task, through SRL: `Javis-Payload-Rough`
+
+The configs above train the toy plain-MuJoCo `Javis-Balance-v0` env (CPU,
+`gymnasium.make`). To train the actual mjlab task this repo is really about
+(GPU-batched, randomized payload/terrain, the one used for sim-to-real):
+
+```bash
+.venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_ppo.yaml \
+    --env Javis-Payload-Rough --device cuda --n-envs 4096
+
+.venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_sac.yaml \
+    --env Javis-Payload-Rough --device cuda --n-envs 512
+```
+
+Setup/task-registration mechanics are on SRL's own docs, not repeated here: the
+[JAVIS walkthrough](https://bigkatoan.github.io/SRL/source/integrations/mjlab.html#real-world-example-javis)
+on `bigkatoan.github.io/SRL`.
+
+**Which one to actually use** (from a real head-to-head convergence run on an
+RTX 3090, both trained to a real plateau, not just a throughput comparison):
+
+- **PPO (`javis_mjlab_ppo.yaml`) is the reliable default.** Reaches a stable
+  policy (`eval/score_mean` plateauing around 2.0) in ~8 minutes and holds
+  it — no further tuning needed.
+- **SAC (`javis_mjlab_sac.yaml`) is faster to a *decent* policy (~2.5 min to
+  match PPO's eventual quality) but does not yet reliably match PPO's final
+  plateau.** The default config already has SRL's async runner + GPU replay
+  buffer + a batch-size restructuring for ~9.5x wall-clock throughput over
+  the SAC textbook defaults (see that file's own comments), but at
+  `lr_alpha: 3e-4` (unchanged) it's prone to premature entropy collapse on a
+  long run, which shows up as the policy improving early then drifting.
+  `configs/srl/javis_mjlab_sac_flashsac.yaml` is an experimental variant
+  (lower `lr_alpha` + FlashSAC-style weight normalization/BatchNorm, see
+  [Bigkatoan/SRL#34](https://github.com/Bigkatoan/SRL/pull/34)) that fixes
+  the instability — two independent 2M-step runs plateaued consistently
+  around `eval/score_mean` ≈ 1.2–1.8 — but that's still below PPO's ~2.0,
+  so it's a stability fix, not (yet) a quality win. Until SAC's plateau
+  matches or beats PPO's, **use PPO for anything going toward the real
+  robot.**
+- A real, unrelated bug this surfaced: `javis/mdp/rewards.py`'s
+  `pitch_rate_l2` term squares angular velocity with no clamp. SAC's
+  optimized config trains an actor capable enough to occasionally find an
+  action sequence that pushes mjlab's physics integrator into a divergent
+  state, and squaring a huge-but-finite angular velocity there produces an
+  astronomical (not NaN) reward value a few times per 2M-step run. Harmless
+  to training itself (the huge value is finite, doesn't propagate into
+  gradients that matter), but worth a defensive clamp — not yet fixed here.
+
 ## Simulation notes / known gaps
 
 - **The ODrive velocity gains on the hardware cannot balance this robot.**
