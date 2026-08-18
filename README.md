@@ -439,27 +439,55 @@ Setup/task-registration mechanics are on SRL's own docs, not repeated here: the
 [JAVIS walkthrough](https://bigkatoan.github.io/SRL/source/integrations/mjlab.html#real-world-example-javis)
 on `bigkatoan.github.io/SRL`.
 
-**Which one to actually use** (from a real head-to-head convergence run on an
-RTX 3090, both trained to a real plateau, not just a throughput comparison):
+**Which one to actually use** -- corrected after a real, *full-length* 20M-step
+PPO run exposed a problem the earlier short comparison below missed entirely.
+Neither algorithm currently has a run that's actually verified to hold a good
+policy for the long haul -- **do not treat either config as "done, just
+train it" for a real robot deployment yet.**
 
-- **PPO (`javis_mjlab_ppo.yaml`) is the reliable default.** Reaches a stable
-  policy (`eval/score_mean` plateauing around 2.0) in ~8 minutes and holds
-  it — no further tuning needed.
-- **SAC (`javis_mjlab_sac.yaml`) is faster to a *decent* policy (~2.5 min to
-  match PPO's eventual quality) but does not yet reliably match PPO's final
-  plateau.** The default config already has SRL's async runner + GPU replay
-  buffer + a batch-size restructuring for ~9.5x wall-clock throughput over
-  the SAC textbook defaults (see that file's own comments), but at
-  `lr_alpha: 3e-4` (unchanged) it's prone to premature entropy collapse on a
-  long run, which shows up as the policy improving early then drifting.
+- **PPO (`javis_mjlab_ppo.yaml`) was previously (wrongly) documented here as
+  "the reliable default... holds it, no further tuning needed."** A full
+  20M-step run disproved that: `eval/score_mean` peaks around 1.87 at step
+  ~3.5M, then **declines continuously for the remaining ~16M steps**, ending
+  at 1.06 -- worse than the very first eval point. Root cause under active
+  investigation: PPO's policy entropy (`ppo/entropy` in the console/
+  TensorBoard, logged as *negative* real entropy -- see
+  `srl/losses/rl_losses.py`) collapses from ~2.75 down to near-zero over the
+  run, timed right around the peak, and `GaussianActorHead`'s `log_std_min`
+  defaults to an essentially unbounded `-20.0` with nothing in this config
+  overriding it -- i.e. nothing structurally stops the policy from
+  collapsing into a narrow, brittle, near-deterministic strategy under
+  continuous domain randomization. A higher `entropy_coef` measurably helps
+  (raised the peak to 2.04 in one test) but does not fully stop the later
+  decline by itself -- this is not yet a solved problem, just a diagnosed
+  one. There is also currently **no best-checkpoint mechanism** -- training
+  only saves the *final* checkpoint, so a run like this one loses its actual
+  peak policy with no way to recover it. Don't trust a finished PPO run's
+  final checkpoint without checking the full `eval/score_mean` trajectory
+  first (`runs/ppo_javis_mjlab_ppo/metrics.jsonl`) -- the last checkpoint
+  saved may be well past the best point in training.
+- **SAC (`javis_mjlab_sac.yaml`) has the same underlying failure class**
+  (entropy/temperature collapse -- SAC's `alpha` here, not PPO's policy std)
+  and was investigated first. The default config already has SRL's async
+  runner + GPU replay buffer + a batch-size restructuring for ~9.5x
+  wall-clock throughput over the SAC textbook defaults (see that file's own
+  comments), but at `lr_alpha: 3e-4` (unchanged) it's still prone to
+  premature entropy collapse on a long run.
   `configs/srl/javis_mjlab_sac_flashsac.yaml` is an experimental variant
   (lower `lr_alpha` + FlashSAC-style weight normalization/BatchNorm, see
   [Bigkatoan/SRL#34](https://github.com/Bigkatoan/SRL/pull/34)) that fixes
-  the instability — two independent 2M-step runs plateaued consistently
-  around `eval/score_mean` ≈ 1.2–1.8 — but that's still below PPO's ~2.0,
-  so it's a stability fix, not (yet) a quality win. Until SAC's plateau
-  matches or beats PPO's, **use PPO for anything going toward the real
-  robot.**
+  *that* instability -- two independent 2M-step runs plateaued consistently
+  around `eval/score_mean` ≈ 1.2–1.8, no decline -- but that plateau is
+  below PPO's *peak* (1.87-2.04), so it trades quality for reliability, not
+  a strict win either.
+- **Bottom line right now**: PPO can reach a higher score than SAC's
+  stabilized plateau, but only briefly, before degrading past even SAC's
+  level -- and nothing currently catches/saves that peak automatically. SAC
+  is lower but (with the FlashSAC variant) actually holds. Until PPO's
+  entropy-collapse fix and a best-checkpoint mechanism both land, treat any
+  single finished training run's final checkpoint with suspicion -- check
+  the eval trajectory, don't assume "training finished" means "training
+  succeeded."
 - A real, unrelated bug this surfaced: `javis/mdp/rewards.py`'s
   `pitch_rate_l2` term squares angular velocity with no clamp. SAC's
   optimized config trains an actor capable enough to occasionally find an
