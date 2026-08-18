@@ -474,7 +474,17 @@ train it" for a real robot deployment yet.**
   | `target_kl=0.01` (existing weak safeguard) | 2.17 (5.0M) | Slows, doesn't stop, the decline |
   | `lr_schedule=adaptive`, `max_lr=1e-2` (rsl_rl's raw constant) | 2.12 (4.0M) | **Worse than doing nothing** -- LR sat pinned near 10x this task's tuned base `lr` for nearly the whole run |
   | `lr_schedule=adaptive`, `max_lr=1e-3` (capped at the tuned base `lr`) | 2.88 (8.5M) | Real, large improvement -- still eventually declines |
-  | Above + `state_dependent_std=false, log_std_init=0.0` (matches rsl_rl's actor exactly) | 3.18 (10M) | Highest peak found; still not a flat hold over a 40M-step run |
+  | Above + `state_dependent_std=false, log_std_init=0.0` (matches rsl_rl's actor exactly) | 3.18 (10M) | Highest peak found -- see below for what happens after |
+
+  **Full 40M-step run of the last row, run to completion**: peaks 3.18 at
+  10M, declines through ~17-23M, then settles into a **genuine, held
+  plateau around 1.1-1.2** for the remainder (steps 28M-40M: rolling-mean
+  changes consistently <2%, e.g. `1.1595 -> 1.1623 -> 1.1681 -> 1.1731 ->
+  1.1722 -> 1.1564 -> 1.1343 -> 1.1237`). So the honest full story isn't
+  "peaks then keeps declining forever" -- it's "a large, unsustainable
+  transient peak, a real correction, then a real (if much lower than the
+  peak) hold." Use `--save-best` to capture the 3.18 peak if you want that
+  exact snapshot; a full from-scratch run instead settles near 1.1-1.2.
 
   Two open questions flagged for whoever picks this up next, not yet
   resolved: (1) mjlab's actual rsl_rl reference config trains for
@@ -503,28 +513,51 @@ train it" for a real robot deployment yet.**
   wall-clock throughput over the SAC textbook defaults (see that file's own
   comments), but at `lr_alpha: 3e-4` (unchanged) it's still prone to
   premature entropy collapse on a long run.
-  `configs/srl/javis_mjlab_sac_flashsac.yaml` is an experimental variant
-  (lower `lr_alpha` + FlashSAC-style weight normalization/BatchNorm, see
-  [Bigkatoan/SRL#34](https://github.com/Bigkatoan/SRL/pull/34)) that fixes
-  *that* instability -- two independent 2M-step runs plateaued consistently
-  around `eval/score_mean` ≈ 1.2–1.8, no decline -- but that plateau is well
-  below PPO's best verified peak (3.18) with the fixes above, so it trades
-  quality for reliability, not a strict win.
-- **Bottom line right now**: with the adaptive-KL-LR + matched-std fixes,
-  PPO reaches meaningfully higher scores than SAC's stabilized plateau and
-  holds them for longer before degrading -- but "before degrading" is still
-  the operative phrase; nothing tested yet holds indefinitely. Use
-  `--save-best`/`save_best: true` on every real run of either algorithm
-  until one does, and always check the eval trajectory rather than trusting
-  a finished run's final checkpoint by default.
+  `configs/srl/javis_mjlab_sac_flashsac.yaml` (lower `lr_alpha` +
+  FlashSAC-style weight normalization/BatchNorm,
+  [Bigkatoan/SRL#34](https://github.com/Bigkatoan/SRL/pull/34)) was
+  verified stable over a 2M-step run -- **but that verdict didn't hold at a
+  longer, PPO-comparable budget**, the same lesson PPO's own investigation
+  already taught. Real 10M-step run, this exact config, unchanged: held a
+  noisy score through step 6M, then `alpha` collapsed to ~3e-4 (despite
+  `lr_alpha` already being 10x lower specifically to prevent this) between
+  steps 6-7M, immediately followed by a **numerical-explosion episode
+  return of -7,148,403** -- and it recurred a second time at step 9M
+  (-2,518.5). Final score at 10M: -40.57, never recovered.
+  [Bigkatoan/SRL#40](https://github.com/Bigkatoan/SRL/pull/40) adds
+  `SACConfig.min_alpha` (a real floor on the auto-tuned temperature,
+  `log_alpha` being otherwise unclamped) in direct response -- the same
+  10M-step run with only `min_alpha: 1e-3` added produced **zero
+  explosions** (real peak 1.78 at step 3.0M, minimum score 0.30 the entire
+  run), confirming the floor does what it's designed to. It does **not**
+  close the gap to PPO, though: score still declined from that 1.78 peak to
+  a noisy ~0.3-0.9 plateau (final 0.41) -- below both the un-stress-tested
+  2M-step "1.17" figure and PPO's own held 40M-step plateau (~1.1-1.2).
+  `min_alpha` is a genuine reliability fix (no more silent, data-corrupting
+  crashes), not one that makes SAC competitive with PPO here.
+- **Bottom line right now**: PPO, with the adaptive-KL-LR + matched-std
+  fixes, reaches a much higher transient peak (3.18) than SAC ever does
+  (1.78 even with the alpha floor), and PPO's own held long-run plateau
+  (~1.1-1.2) is meaningfully above SAC's (~0.3-0.9 with the alpha floor;
+  catastrophically unstable without it). PPO is the clear better choice for
+  this task right now, on both quality and safety. Use `--save-best`/
+  `save_best: true` (on by default in both `javis_mjlab_ppo.yaml` and
+  `javis_mjlab_sac_flashsac.yaml` now) on every real run of either
+  algorithm, and always check the eval trajectory rather than trusting a
+  finished run's final checkpoint.
 - A real, unrelated bug this surfaced: `javis/mdp/rewards.py`'s
-  `pitch_rate_l2` term squares angular velocity with no clamp. SAC's
-  optimized config trains an actor capable enough to occasionally find an
-  action sequence that pushes mjlab's physics integrator into a divergent
-  state, and squaring a huge-but-finite angular velocity there produces an
-  astronomical (not NaN) reward value a few times per 2M-step run. Harmless
-  to training itself (the huge value is finite, doesn't propagate into
-  gradients that matter), but worth a defensive clamp — not yet fixed here.
+  `pitch_rate_l2` term squares angular velocity with no clamp. An actor
+  capable enough to find an action sequence that pushes mjlab's physics
+  integrator into a divergent state gets an astronomical (not NaN) reward
+  value there. **This was previously assessed as harmless "a few times per
+  2M-step run" -- that assessment does not hold at longer budgets.**
+  Combined with a fully-collapsed SAC `alpha` (which removes the one force
+  discouraging exploiting exactly this), it produced genuine
+  training-corrupting numerical explosions (`eval/score_mean` as extreme as
+  -7.1e6) on a real 10M-step run -- see above. `min_alpha` (SRL#40) fixes
+  this indirectly (by never letting `alpha` fully collapse), but the
+  underlying unclamped reward term is still unfixed and worth a defensive
+  clamp directly.
 
 ## Simulation notes / known gaps
 

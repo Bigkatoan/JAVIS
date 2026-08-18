@@ -2,6 +2,16 @@
 # large-batch/few-update setup as javis_mjlab_sac.yaml, PLUS the changes
 # a full investigation found necessary to make that setup actually stable:
 #
+# `train.min_alpha` below needs https://github.com/Bigkatoan/SRL/pull/40
+# merged to actually do anything -- SRL's config loader silently DROPS any
+# train:/actor: key that isn't a field on the installed SACConfig, so on an
+# install from before that PR merges this key is silently ignored and
+# training falls back to the old unfloored-alpha behavior with zero
+# warning. Re-run `.venv/bin/pip install -e ".[srl]" --upgrade` (or
+# otherwise force-reinstall srl-rl) after that PR lands if you installed
+# before it did. See this file's "Update" section further down for the
+# full real-GPU before/after numbers this is based on.
+#
 #   1. `norm: batch_norm` on every actor/critic MLP layer (was `layer_norm`),
 #      + `train.weight_norm_projection: true` -- FlashSAC's (arXiv:2604.04539
 #      section 4.2) two cheapest stability mechanisms. Needs Bigkatoan/SRL's
@@ -78,6 +88,41 @@
 # cheapest mechanisms implemented here; closing the remaining gap to PPO's
 # plateau likely needs more of that stack, not just lr_alpha tuning on top
 # of what's here.
+#
+# ============================================================================
+# Update: the 2M-step "stable" verdict above did not hold at 10M steps
+# ============================================================================
+#
+# This config was verified stable over 2M steps (above). Given PPO needed a
+# much longer budget to reveal its own peak-then-decline problem (see
+# javis_mjlab_ppo.yaml / README.md), the same question was asked of this
+# config: does the 2M-step plateau actually hold 5x longer, or was it just
+# too short a test?
+#
+# Real 10M-step run, this exact config, no changes: held a noisy-but-bounded
+# score (~0.5-1.9) through step 6M, then `sac/alpha` -- despite lr_alpha
+# already being 10x lower specifically to prevent this -- collapsed from a
+# healthy magnitude down to ~3e-4 (same order of magnitude as the *unfixed*
+# baseline's 0.0002 collapse above) between steps 6M-7M, immediately
+# followed by a numerical-explosion episode return of -7,148,403 -- the
+# exact `pitch_rate_l2` exploit already diagnosed above, just delayed
+# rather than prevented. It recurred a second time at step 9M (-2,518.5).
+# Final score at step 10M: -40.57, never recovered. lr_alpha=3e-5 bought
+# time, not a permanent fix.
+#
+# `train.min_alpha: 1e-3` below (Bigkatoan/SRL#40) is a real floor on
+# `log_alpha` (otherwise an unclamped free parameter) added specifically in
+# response to this. Same 10M-step run with only `min_alpha` added: **zero
+# numerical explosions** (real peak 1.78 at step 3.0M, minimum eval score
+# 0.30 the entire run) -- the floor does prevent alpha from ever fully
+# collapsing, which does prevent the reward-exploit crashes. But it does
+# NOT prevent decline: score still fell from that 1.78 peak to a noisy low
+# plateau (~0.3-0.9, final 0.41) for the second half of the run -- worse
+# than the un-stress-tested 2M-step "1.17" figure above, and well below
+# PPO's own eventual held plateau (~1.1-1.2, verified over a comparable
+# 40M-step run -- see README.md). `min_alpha` is a real reliability fix
+# (no more silent, data-corrupting crashes) but does not make SAC
+# competitive with PPO on this task as currently configured.
 #
 #   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_sac_flashsac.yaml \
 #       --env Javis-Payload-Rough --device cuda --n-envs 512
@@ -164,3 +209,18 @@ train:
   # FlashSAC weight normalization (arXiv:2604.04539 section 4.2) -- see
   # this file's header comment.
   weight_norm_projection: true
+  # Floor on the auto-tuned temperature (Bigkatoan/SRL#40) -- REQUIRED for
+  # a long run, not optional, same as lr_alpha above: verified on a real
+  # 10M-step run that alpha still eventually collapses despite lr_alpha
+  # already being 10x lower, triggering the exact pitch_rate_l2-exploit
+  # numerical explosions this config's header comment describes. With this
+  # floor, zero explosions across the full 10M steps -- see the "Update"
+  # section in this file's header comment for the full real-GPU numbers
+  # (this does NOT fix the separate, still-open decline-to-a-low-plateau
+  # problem, only the crashes).
+  min_alpha: 1e-3
+  # Best-checkpoint tracking (SRL#38) -- this config still declines from
+  # its peak over a long run (see header comment), so the actual best
+  # policy needs to be tracked independently of the final checkpoint, same
+  # reasoning as javis_mjlab_ppo.yaml.
+  save_best: true
