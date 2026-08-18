@@ -338,6 +338,56 @@ small) -- neighbors in the same batched sim, each with its own randomized
 mass/CoM/payload/terrain tile from the task's own domain randomization, not
 a scripted scenario list.
 
+### Just `gym.make()`, no SB3/SRL/VecEnv
+
+If all you want is the real task behind a plain `gymnasium.Env` -- one robot,
+standard `reset()`/`step()`, no training framework attached at all (manual
+testing, notebooks, teleoperation-style scripting, feeding it to some other
+tool in the Gymnasium ecosystem) -- `javis/gym_env_mjlab_single.py` wraps
+`Javis-Velocity-Flat`/`Javis-Payload-Flat`/`Javis-Payload-Rough` as ordinary
+`gym.make()` ids, `num_envs=1` under the hood:
+
+```bash
+.venv/bin/pip install -e ".[sim]"   # just mjlab -- no SB3, no SRL
+```
+
+```python
+import javis.gym_env_mjlab_single  # registers the three -v0 ids at import time
+import gymnasium as gym
+
+env = gym.make("Javis-Payload-Rough-v0", device="cuda:0")
+print(env.observation_space)  # Dict('actor': Box(384,), 'critic': Box(624,))
+print(env.action_space)       # Box(2,) -- wheel velocity targets, [-1, 1]
+
+obs, info = env.reset(seed=0)
+for _ in range(1000):
+    action = env.action_space.sample()          # or your own policy
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        obs, info = env.reset()
+env.close()
+```
+
+The `import javis.gym_env_mjlab_single` line matters -- same pattern as
+`Javis-Balance-v0` in `javis/gym_env.py`, the id only becomes resolvable to
+`gym.make()` once that module has actually run (registration is a top-level
+side effect, not automatic on a bare `import javis`).
+
+`observation_space`/`action_space` are real `gymnasium.spaces` built from the
+task's own `ObservationManager`/`ActionManager` at construction time (not
+hardcoded), so this stays correct if `javis/balance_task.py`'s reward/
+observation terms ever change. `obs["actor"]` is what a real deployment would
+actually see; `obs["critic"]` carries privileged terms (e.g. the true
+`load_state`) for anything that wants an asymmetric actor-critic split --
+ignore it if you don't need it.
+
+Like `JavisMjlabVecEnv` above, this sets `auto_reset=False`, but for a
+single-env `gym.Env` that just means the *standard* Gymnasium contract
+applies: after `step()` returns `terminated` or `truncated`, call `reset()`
+yourself before stepping again (exactly how `CartPole-v1` behaves) --
+nothing resets out from under you mid-loop the way mjlab's own default
+would.
+
 ## Alternative #3: training through github.com/Bigkatoan/SRL
 
 [SRL](https://github.com/Bigkatoan/SRL) is a separate YAML-first RL library
