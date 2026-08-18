@@ -12,6 +12,22 @@
 # that distinction matters. env_type: mjlab is what makes srl-train skip its
 # own SyncVectorEnv/AsyncVectorEnv wrapping and build one already-batched env
 # instead (same reasoning SRL already applies to real Isaac Lab envs).
+#
+# lr_schedule/desired_kl/max_lr/state_dependent_std/log_std_init below need
+# https://github.com/Bigkatoan/SRL/pull/39 merged (adaptive KL-based LR
+# schedule) to actually do anything -- SRL's config loader silently DROPS
+# any train:/actor: key that isn't a field on the installed PPOConfig/
+# HeadConfig, so on an SRL install from before that PR merges, this config
+# will run with old-style fixed-lr/state-dependent-std behavior with ZERO
+# warning that anything was ignored. Re-run `.venv/bin/pip install -e
+# ".[srl]" --upgrade` (or otherwise force-reinstall srl-rl) after that PR
+# lands if you installed before it did. See README.md's "Which one to
+# actually use" section and SRL PR #39's description for the full,
+# real-GPU-verified before/after numbers this is based on -- short version:
+# these settings substantially raise and delay the peak eval/score_mean a
+# run reaches (1.87->3.18 in testing) but do NOT yet make it hold flat
+# indefinitely; `save_best: true` below exists specifically because of that
+# -- always check the saved best_*.pt against final_*.pt before deploying.
 
 env_id: "Javis-Payload-Rough"
 env_type: "mjlab"
@@ -48,7 +64,14 @@ actor:
   name: actor
   type: gaussian
   action_dim: 2
-  log_std_init: -1.0
+  # Matches mjlab's own rsl_rl reference config for this exact task
+  # (javis_balance_ppo_runner_cfg in javis/balance_task.py: std_type=
+  # "scalar", init_std=1.0) instead of the arbitrary log_std_init=-1.0
+  # (std=0.368) + default state_dependent_std=True this used to have --
+  # untested whether this alone matters much, but it's free to match a
+  # working reference exactly rather than guess.
+  log_std_init: 0.0
+  state_dependent_std: false
   layers:
     - {out_features: 128, activation: elu, norm: none}
 
@@ -76,3 +99,21 @@ train:
   entropy_coef: 0.005
   vf_coef: 1.0
   max_grad_norm: 1.0
+  # Adaptive KL-based LR schedule (SRL PR #39) -- ports mjlab's own rsl_rl
+  # reference training path's schedule="adaptive"/desired_kl=0.01 for this
+  # exact task. max_lr is deliberately capped at this config's own tuned
+  # `lr` (1e-3), NOT rsl_rl's raw 1e-2 constant -- verified on this task
+  # that blindly using 1e-2 (10x this lr) is actively worse than no
+  # adaptive schedule at all (LR spent nearly the whole run pinned near
+  # that ceiling). See SRL PR #39 for the full real-GPU comparison.
+  lr_schedule: adaptive
+  desired_kl: 0.01
+  max_lr: 1e-3
+  # Best-checkpoint tracking (SRL PR #38, merged) -- necessary as long as
+  # this run peaks-then-declines rather than holding flat: saves
+  # best_*.pt (highest eval/score_mean seen) alongside the periodic/final
+  # checkpoints, so the actual best policy from a run is always
+  # recoverable regardless of where training ends up by the final step.
+  save_best: true
+  eval_freq: 1000000
+  eval_episodes: 30
