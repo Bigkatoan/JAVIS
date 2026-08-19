@@ -35,6 +35,20 @@ from mjlab.sensor.contact_sensor import ContactSensor
 _ROBOT = SceneEntityCfg("robot")
 
 
+# rad/s. Generously above anything a real trajectory produces (even a
+# violent tumble tops out at a few rad/s for this robot's geometry) but
+# comfortably below the magnitudes a divergent physics integrator emits --
+# real examples hit here across multiple SAC runs on this exact task: the
+# unfloored 10M-step run's -7,148,403 and -2,518.5 explosion episodes
+# (`configs/srl/javis_mjlab_sac_flashsac.yaml`'s "Update" section) trace
+# back to a body-frame pitch rate on the order of 1e5 rad/s -- an
+# integrator artifact, not a physical event. Clamping the rate itself
+# (rather than the resulting reward) keeps the fix legible in the same
+# units the term's own docstring already reasons in, and is a no-op for
+# every trajectory that isn't already in a divergent state.
+_PITCH_RATE_CLAMP_RAD_S = 50.0
+
+
 def pitch_rate_l2(env, asset_cfg: SceneEntityCfg = _ROBOT) -> torch.Tensor:
   """Squared body-frame pitch rate.
 
@@ -42,9 +56,23 @@ def pitch_rate_l2(env, asset_cfg: SceneEntityCfg = _ROBOT) -> torch.Tensor:
   controller actually owns; roll and yaw belong elsewhere. Penalizing the rate
   (not the angle) rewards holding *a* lean rather than swinging through
   vertical, which is what balancing an off-center load actually looks like.
+
+  Clamped to +/-`_PITCH_RATE_CLAMP_RAD_S` before squaring: uncapped, a rare
+  physics-integrator divergence (mjlab's own MuJoCo-Warp stepper very
+  occasionally produces one under an aggressive, low-entropy actor) turns a
+  huge-but-finite angular velocity into an astronomically large (not NaN,
+  so nothing downstream crashes -- it just silently corrupts logs and, for
+  a replay-buffer-based learner, whatever future minibatches happen to
+  resample that transition) reward value. See the module docstring's
+  "problem with rewarding upright" framing -- this is the same spirit
+  applied to a failure mode that isn't about which behavior gets rewarded,
+  but about the reward function trusting an unbounded physical measurement.
   """
   asset = env.scene[asset_cfg.name]
-  return torch.square(asset.data.root_link_ang_vel_b[:, 1])
+  pitch_rate = torch.clamp(
+    asset.data.root_link_ang_vel_b[:, 1], -_PITCH_RATE_CLAMP_RAD_S, _PITCH_RATE_CLAMP_RAD_S
+  )
+  return torch.square(pitch_rate)
 
 
 def torque_saturation(env, action_name: str = "wheel_vel") -> torch.Tensor:
