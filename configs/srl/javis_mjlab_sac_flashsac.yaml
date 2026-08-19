@@ -124,6 +124,40 @@
 # (no more silent, data-corrupting crashes) but does not make SAC
 # competitive with PPO on this task as currently configured.
 #
+# ============================================================================
+# Update: the actual root cause of the explosions, found and fixed upstream
+# ============================================================================
+#
+# `min_alpha` above treats the SYMPTOM (alpha fully collapsing removes the
+# one force discouraging over-exploiting a possibly-wrong critic). Tracing
+# the mechanism directly (reading SRL's own training loop, not guessing)
+# found the actual bug: SRL's mjlab/isaaclab backend never disabled
+# mjlab's own `auto_reset=True` default, so at every time-limit truncation
+# the Q-target was bootstrapped off a completely unrelated, freshly-reset
+# episode's observation instead of the true terminal state of the episode
+# that just ended -- an increasingly large fraction of transitions as the
+# policy got good enough to survive to the 20s/2000-step cap, exactly
+# matching when these runs were observed to start going wrong. Fixed at
+# https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one
+# (needs merging; re-run `.venv/bin/pip install -e ".[srl]" --upgrade`
+# after it does, same silent-drop-on-old-install caveat as elsewhere in
+# this file).
+#
+# Real-GPU verification, the SHARPEST possible test: this exact config
+# with the auto_reset fix applied and `min_alpha` forced OFF (1e-8,
+# effectively disabled -- i.e. the exact historically-explosive setup
+# above, unmodified otherwise), run the full 10M steps again. Result:
+# **zero NaN/Inf/error output anywhere in the run**, both historical
+# explosion checkpoints (steps 6-7M and 9M) passed completely clean (worst
+# single point: a mild -0.18, immediately recovering to positive), ending
+# at 0.42 -- a normal "declines to a modest plateau" shape, not a
+# numerical explosion. Confirms the auto_reset bug, not entropy collapse
+# per se, was the actual mechanism: correct bootstrapping alone prevents
+# the catastrophic failure even with zero entropy floor. `min_alpha`
+# remains a reasonable defensive default (belt-and-suspenders against any
+# other unbounded-parameter surprise), but is no longer the thing standing
+# between this config and a numerical explosion.
+#
 #   .venv/bin/python scripts/train_srl.py --config configs/srl/javis_mjlab_sac_flashsac.yaml \
 #       --env Javis-Payload-Rough --device cuda --n-envs 512
 
