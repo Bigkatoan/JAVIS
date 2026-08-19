@@ -49,19 +49,15 @@ gym = [
 # and the per-env (not batched) action_dim fix that SAC/DDPG/TD3 need on
 # isaaclab/mjlab.
 #
-# Temporarily pinned again (same pattern as the old integration/javis-
-# training pin, see git blame) -- this branch has the mjlab auto_reset
-# bootstrap-corruption fix, the PPO GAE off-by-one fix, and PPO entropy-
-# coefficient annealing, all found and real-GPU-verified against this
-# exact task (see README.md's "Training a policy that survives a changing
-# payload" section for the full numbers: PPO now holds a stable plateau
-# ~1.45-1.85 for the last 12M steps of a 40M-step run instead of declining
-# indefinitely, and the historically-explosive unfloored SAC config runs
-# 10M steps clean with zero numerical explosions). PR open at
-# https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one
-# -- point this back at `main` once it merges.
+# The temporary pin to fix/mjlab-auto-reset-and-ppo-gae-off-by-one (mjlab
+# auto_reset bootstrap-corruption fix + PPO GAE off-by-one fix + PPO
+# entropy-coefficient annealing, all real-GPU-verified against this exact
+# task -- see README.md's "Training a policy that survives a changing
+# payload" section for the full numbers) merged as
+# https://github.com/Bigkatoan/SRL/pull/41 -- back to plain `main`, which
+# now has everything that branch had.
 srl = [
-  "srl-rl @ git+https://github.com/Bigkatoan/SRL.git@fix/mjlab-auto-reset-and-ppo-gae-off-by-one",
+  "srl-rl @ git+https://github.com/Bigkatoan/SRL.git",
   "gymnasium",
 ]
 
