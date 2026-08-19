@@ -497,6 +497,70 @@ train it" for a real robot deployment yet.**
   scaffolding. rsl_rl's reference config sets `obs_normalization=True` on
   both actor and critic; SRL's PPO has no equivalent, untested as a lever
   here.
+- **From-scratch control experiment: is this SRL, or the task?** To answer
+  that question directly, `scripts/scratch_ppo.py`/`scripts/scratch_sac.py`
+  (hand-written, CleanRL-style PPO/SAC -- no SRL, no rsl_rl, see those
+  files' own docstrings for the full implementation rationale) were trained
+  directly against this exact task on this same RTX 3090, matched step
+  budgets (40M PPO / 10M SAC). **Neither reproduced SRL's failure shapes.**
+  From-scratch PPO: rapid rise then a wide, noisy plateau (~10-23, mean
+  ~15.6) for the rest of a 40M-step run -- no sustained decline, ~13x
+  SRL's eventual plateau. From-scratch SAC, run with `--min-alpha 0.0`
+  (no entropy floor -- deliberately the exact historically-unstable
+  configuration): alpha collapsed to ~2e-4 by step 1.5M and stayed
+  collapsed for the remaining 8.5M+ steps with **zero NaN/Inf and no
+  numerical explosion**, passing both step-6-7M and step-9M (where SRL's
+  equivalent config exploded) completely clean. This pointed the
+  investigation at SRL's implementation rather than the task/reward
+  shaping, and directly led to the two real bugs below.
+- **Real root cause, found and fixed upstream: mjlab's `auto_reset` was
+  silently corrupting every time-limit bootstrap, and PPO's GAE had an
+  unrelated off-by-one.** Reading SRL's own training loop directly (not
+  guessing) found: (1) SRL never disabled mjlab's own `auto_reset=True`
+  default for its mjlab/isaaclab backend, so at every 20s/2000-step time
+  limit, both PPO's GAE bootstrap and SAC's Q-target were evaluated
+  against a completely unrelated, freshly-reset episode's first
+  observation instead of the true terminal state -- an increasingly large
+  share of transitions as a policy got good enough to survive that long,
+  which is exactly when these runs were observed to start going wrong.
+  (2) Independently, `RolloutBuffer.compute_returns_and_advantages` had a
+  genuine off-by-one in which stored `done` flag gated the GAE
+  chain-break -- present on every PPO run in the library, unrelated to
+  mjlab, confirmed with a hand-traced example and a regression test.
+  Both fixed on the
+  [`fix/mjlab-auto-reset-and-ppo-gae-off-by-one`](https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one)
+  branch (pending PR/merge -- `pyproject.toml`'s `srl` extra is
+  temporarily pinned to it directly; see its own comment). Real 40M-step
+  re-verification
+  (same task, `lr_schedule="adaptive"` already on): **peaks far higher
+  than the original bug (10.05 @ step 11M vs. 3.18 @ step 10M) and holds
+  it much longer, but still declines afterward**, ending BELOW the
+  original bug's own eventual plateau (0.77 vs. 1.10-1.23 @ step 40M).
+- **The remaining decline: PPO's entropy bonus has nothing pulling it back
+  down.** Traced directly in the fixed run's own metrics: `ppo/entropy`
+  climbs continuously and monotonically for the ENTIRE 40M-step run (-2.76
+  near the start to +1.45 at the end, never turning over) -- the *opposite*
+  of the original entropy-collapse story, but the same underlying shape of
+  problem (nothing bounds a monotonic drift over a long enough run, and a
+  policy getting steadily noisier hurts closed-loop control on a physical
+  balance task regardless of which direction the drift goes). Confirmed
+  `log_std` is correctly clamped and nowhere near its ceiling -- the fixed
+  `entropy_coef` bonus's constant, one-directional pull (unlike SAC's
+  auto-tuned `alpha`, which targets a specific entropy level and can push
+  either direction) just kept winning against the policy gradient's
+  counter-pressure. Same SRL branch/PR above adds
+  `PPOConfig.entropy_coef_anneal_steps` (linearly decays `entropy_coef`
+  toward a floor over a configured number of gradient steps -- see
+  `javis_mjlab_ppo.yaml`'s own comment for the exact numbers used here).
+  Real 40M-step re-verification with annealing added on top of both fixes
+  above: a much longer-sustained elevated plateau (average ~4.2 across
+  steps 6M-28M, vs. the un-annealed fix's brief 10-19M spike-then-crash),
+  then settles into a genuinely **stable** second plateau for the last 12M
+  steps (1.45-1.85, tight band, not still declining at step 40M) -- ends
+  at 1.45, ~2x the un-annealed fix's final value and above the original
+  bug's own plateau. Still not a clean "peaks and holds at its peak"
+  outcome, but a real, verified, substantial improvement over both the
+  original bug and the auto_reset/GAE fix alone.
 - **Best-checkpoint tracking now exists**
   ([Bigkatoan/SRL#38](https://github.com/Bigkatoan/SRL/pull/38), merged):
   `save_best: true` (now default-on in `javis_mjlab_ppo.yaml`) saves
@@ -535,29 +599,51 @@ train it" for a real robot deployment yet.**
   2M-step "1.17" figure and PPO's own held 40M-step plateau (~1.1-1.2).
   `min_alpha` is a genuine reliability fix (no more silent, data-corrupting
   crashes), not one that makes SAC competitive with PPO here.
-- **Bottom line right now**: PPO, with the adaptive-KL-LR + matched-std
-  fixes, reaches a much higher transient peak (3.18) than SAC ever does
-  (1.78 even with the alpha floor), and PPO's own held long-run plateau
-  (~1.1-1.2) is meaningfully above SAC's (~0.3-0.9 with the alpha floor;
-  catastrophically unstable without it). PPO is the clear better choice for
-  this task right now, on both quality and safety. Use `--save-best`/
-  `save_best: true` (on by default in both `javis_mjlab_ppo.yaml` and
-  `javis_mjlab_sac_flashsac.yaml` now) on every real run of either
-  algorithm, and always check the eval trajectory rather than trusting a
-  finished run's final checkpoint.
-- A real, unrelated bug this surfaced: `javis/mdp/rewards.py`'s
-  `pitch_rate_l2` term squares angular velocity with no clamp. An actor
+- **Update: the auto_reset bug above (not entropy collapse per se) was the
+  real explosion mechanism for SAC too.** Same
+  [`fix/mjlab-auto-reset-and-ppo-gae-off-by-one`](https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one)
+  branch as PPO's fix above -- SAC's Q-target was bootstrapping off the
+  same wrong, freshly-reset next-observation at every time-limit
+  truncation. The sharpest possible real-GPU test: this exact config with
+  the auto_reset fix applied and `min_alpha` forced OFF (`1e-8`,
+  effectively disabled -- i.e. the exact historically-explosive setup,
+  unmodified otherwise), run the full 10M steps again. **Zero NaN/Inf
+  anywhere in the run**, both historical explosion checkpoints (steps
+  6-7M and 9M) passed completely clean (worst point: a mild -0.18,
+  immediately recovering to positive), ending at 0.42 -- a normal
+  "declines to a modest plateau" shape, not a numerical explosion.
+  Confirms correct bootstrapping alone prevents the catastrophic failure
+  even with zero entropy floor. `min_alpha` remains a reasonable
+  defensive default but is no longer what stands between this config and
+  an explosion.
+- **Bottom line right now**: PPO, with the adaptive-KL-LR + matched-std +
+  auto_reset/GAE + entropy-annealing fixes, reaches a much higher
+  transient peak (10.05) than SAC ever does (peaks similarly early, ~3.4,
+  before its own decline) and PPO's fixed held long-run plateau
+  (~1.45-1.85) is above SAC's fixed one (declines to a modest, sometimes
+  slightly negative plateau, final 0.42). PPO remains the clear better
+  choice for this task, on both quality and safety, and SAC is no longer
+  actively dangerous (no explosions) even in its least-defended
+  configuration. Use `--save-best`/`save_best: true` (on by default in
+  both configs) on every real run of either algorithm, and always check
+  the eval trajectory rather than trusting a finished run's final
+  checkpoint -- neither algorithm holds a truly flat peak yet.
+- A real, unrelated bug this surfaced, now fixed: `javis/mdp/rewards.py`'s
+  `pitch_rate_l2` term squared angular velocity with no clamp. An actor
   capable enough to find an action sequence that pushes mjlab's physics
   integrator into a divergent state gets an astronomical (not NaN) reward
   value there. **This was previously assessed as harmless "a few times per
-  2M-step run" -- that assessment does not hold at longer budgets.**
-  Combined with a fully-collapsed SAC `alpha` (which removes the one force
-  discouraging exploiting exactly this), it produced genuine
-  training-corrupting numerical explosions (`eval/score_mean` as extreme as
-  -7.1e6) on a real 10M-step run -- see above. `min_alpha` (SRL#40) fixes
-  this indirectly (by never letting `alpha` fully collapse), but the
-  underlying unclamped reward term is still unfixed and worth a defensive
-  clamp directly.
+  2M-step run" -- that assessment does not hold at longer budgets**,
+  producing genuine training-corrupting numerical explosions
+  (`eval/score_mean` as extreme as -7.1e6) on a real 10M-step run before
+  the auto_reset fix above (see the historical explosion numbers
+  throughout this section). `min_alpha`/the auto_reset fix both address
+  this indirectly; the reward term itself is now also clamped directly
+  (`_PITCH_RATE_CLAMP_RAD_S = 50.0` in `javis/mdp/rewards.py`, generous vs.
+  anything physically real for this robot, well below the ~1e5 rad/s
+  divergence values traced from the exploded runs above) -- a no-op for
+  every non-divergent trajectory, belt-and-suspenders on top of the real
+  fixes rather than a replacement for them.
 
 ## Simulation notes / known gaps
 
