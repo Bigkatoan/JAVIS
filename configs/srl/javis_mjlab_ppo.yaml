@@ -172,25 +172,50 @@ train:
   # total_steps/n_epochs/batch_size change (e.g. a 120M-step run needs
   # ~24000, not 8000 -- ~65% of that run's ~36,600 total gradient steps).
   #
-  # entropy_coef_final is 0.0, not the 0.0005 (10%) floor an earlier
-  # version of this config used. A real 120M-step run with that 10%
-  # floor found ppo/entropy climbing CONTINUOUSLY for the entire run --
-  # the floor slowed the climb but never stopped it, since any nonzero
-  # entropy_coef is still a one-directional pull on policy std with
-  # nothing in this fixed-coefficient scheme (unlike SAC's target-
-  # seeking auto-tuned alpha) to reverse it once "enough" exploration
-  # has happened. It reached log_std_max (see actor.log_std_max above --
-  # now 1.0, was 2.0) by ~step 94M in that run, and the score plateau
-  # that looked stable from ~42M onward was consistent with training
-  # having effectively stalled around there (deterministic-eval tracking
-  # accuracy was statistically unchanged from step 10M all the way to
-  # 120M) rather than genuine convergence -- runaway stochastic-rollout
-  # noise drowning out the policy-gradient signal needed to keep
-  # improving the actual (deterministic) policy. A true zero floor
-  # removes the persistent pull entirely once annealing completes,
-  # letting the policy gradient's own pressure dominate freely instead
-  # of fighting a small but permanent headwind.
-  entropy_coef_final: 0.0
+  # entropy_coef_final's real history on this task, two real long runs so
+  # far (both with lr_schedule="adaptive" and log_std_max=1.0 already on):
+  #
+  #   0.0005 (10% floor): a 120M-step run found ppo/entropy climbing
+  #     CONTINUOUSLY for the entire run -- any nonzero entropy_coef is a
+  #     one-directional pull on policy std with nothing in this
+  #     fixed-coefficient scheme (unlike SAC's target-seeking auto-tuned
+  #     alpha) to reverse it once "enough" exploration has happened. It
+  #     reached log_std_max (then 2.0, since tightened to 1.0 below) by
+  #     ~step 94M, and the score plateau that looked stable from ~42M
+  #     onward was consistent with training having effectively stalled
+  #     (deterministic-eval tracking accuracy was statistically unchanged
+  #     from step 10M all the way to 120M) rather than genuine
+  #     convergence -- runaway stochastic-rollout noise drowning out the
+  #     policy-gradient signal needed to keep improving the actual
+  #     (deterministic) policy.
+  #
+  #   0.0 (true zero floor): tried specifically to remove that
+  #     persistent pull entirely. A real 60M-step run found this WORSE,
+  #     not better -- score declined to a genuine flat plateau at 0.54 by
+  #     step 60M, below every other configuration tried on this task
+  #     including the ORIGINAL, pre-any-fix bug's own eventual plateau
+  #     (~1.06-1.23). Also surprising: ppo/entropy kept climbing for a
+  #     long stretch even with entropy_coef_weight already at
+  #     effectively zero (confirmed directly from metrics.jsonl -- weight
+  #     ~1e-5 by step 26M, entropy still rising from ~2.0 to ~3.8+ over
+  #     the next 14M steps) -- meaning the entropy bonus was not the
+  #     SOLE driver of the climb, something in the policy-gradient
+  #     dynamics itself in this specific setup also pushes toward higher
+  #     variance, not yet fully understood. Whatever the exact mechanism,
+  #     the true-zero floor measurably hurt rather than helped, which
+  #     also suggests entropy_coef isn't purely a "one-directional
+  #     nuisance pull" the way the 0.0005 case's framing above assumed --
+  #     it may be doing real, load-bearing regularization work beyond
+  #     just inflating entropy.
+  #
+  # entropy_coef_final: 0.0001 (a small, non-zero, 20x-lower-than-0.0005
+  # floor) is this task's current best guess, splitting the difference:
+  # low enough to slow the climb much more than 0.0005 did, non-zero so
+  # as not to remove whatever real regularization the 0.0-run's
+  # regression suggests it provides. Real-GPU verification of this exact
+  # value tracked separately -- update this comment with the result
+  # before trusting this value blindly.
+  entropy_coef_final: 0.0001
   entropy_coef_anneal_steps: 8000
   # Best-checkpoint tracking (SRL PR #38, merged) -- necessary as long as
   # this run peaks-then-declines rather than holding flat: saves
