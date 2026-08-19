@@ -102,6 +102,22 @@ actor:
   # working reference exactly rather than guess.
   log_std_init: 0.0
   state_dependent_std: false
+  # Real 120M-step verification run (3x the previously "verified" 40M
+  # budget -- see this file's header comment) found ppo/entropy climbing
+  # CONTINUOUSLY and monotonically for the entire run, straight through
+  # the score plateau that looked stable at 40M steps, reaching this
+  # head's default log_std_max=2.0 (std=e^2~=7.4, absurd against a
+  # [-1, 1] action range) by ~step 94M. Entropy annealing (below) slows
+  # the climb but a persistent positive entropy_coef is still a
+  # one-directional pull with nothing to reverse it -- it was always
+  # going to reach the ceiling eventually on a long enough run, this
+  # config's ceiling was just also unreasonably high. Tightened to 1.0
+  # (std up to e^1~=2.72 -- still meaningfully above the 1.0 init std for
+  # real exploration headroom, nowhere near 7.4) as a direct bound on
+  # worst-case action noise, independent of whatever exactly drives the
+  # climb. See train.entropy_coef_final below for the other half of this
+  # fix.
+  log_std_max: 1.0
   layers:
     - {out_features: 128, activation: elu, norm: none}
 
@@ -151,11 +167,30 @@ train:
   # batch_size) = 5 * (24*4096/16384) = 30 gradient steps per iteration,
   # total_steps/(_n_steps*n_envs) ~= 407 iterations for this config's
   # 40M-step budget -> ~12,180 total gradient steps. 8000 (~65% of that)
-  # anneals entropy_coef from 0.005 down to 10% of that (0.0005), then
-  # holds the floor for the remaining ~35% of the run -- real exploration
-  # pressure early, much weaker constant upward pull on policy std late.
-  # Recompute proportionally if total_steps/n_epochs/batch_size change.
-  entropy_coef_final: 0.0005
+  # anneals entropy_coef from 0.005 down toward the floor, then holds it
+  # for the remaining ~35% of the run. Recompute proportionally if
+  # total_steps/n_epochs/batch_size change (e.g. a 120M-step run needs
+  # ~24000, not 8000 -- ~65% of that run's ~36,600 total gradient steps).
+  #
+  # entropy_coef_final is 0.0, not the 0.0005 (10%) floor an earlier
+  # version of this config used. A real 120M-step run with that 10%
+  # floor found ppo/entropy climbing CONTINUOUSLY for the entire run --
+  # the floor slowed the climb but never stopped it, since any nonzero
+  # entropy_coef is still a one-directional pull on policy std with
+  # nothing in this fixed-coefficient scheme (unlike SAC's target-
+  # seeking auto-tuned alpha) to reverse it once "enough" exploration
+  # has happened. It reached log_std_max (see actor.log_std_max above --
+  # now 1.0, was 2.0) by ~step 94M in that run, and the score plateau
+  # that looked stable from ~42M onward was consistent with training
+  # having effectively stalled around there (deterministic-eval tracking
+  # accuracy was statistically unchanged from step 10M all the way to
+  # 120M) rather than genuine convergence -- runaway stochastic-rollout
+  # noise drowning out the policy-gradient signal needed to keep
+  # improving the actual (deterministic) policy. A true zero floor
+  # removes the persistent pull entirely once annealing completes,
+  # letting the policy gradient's own pressure dominate freely instead
+  # of fighting a small but permanent headwind.
+  entropy_coef_final: 0.0
   entropy_coef_anneal_steps: 8000
   # Best-checkpoint tracking (SRL PR #38, merged) -- necessary as long as
   # this run peaks-then-declines rather than holding flat: saves
