@@ -28,6 +28,36 @@
 # run reaches (1.87->3.18 in testing) but do NOT yet make it hold flat
 # indefinitely; `save_best: true` below exists specifically because of that
 # -- always check the saved best_*.pt against final_*.pt before deploying.
+#
+# entropy_coef_final/entropy_coef_anneal_steps below need
+# https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one
+# merged (same silent-drop caveat as above -- re-upgrade after it lands).
+# That same branch also fixes two bugs upstream of this task's actual
+# instability, found investigating why the adaptive-KL-LR fix above still
+# didn't make PPO hold flat: (1) mjlab's own `auto_reset=True` default was
+# silently handing PPO's GAE bootstrap the WRONG next-state (a different,
+# freshly-reset episode's first frame) at every time-limit truncation; (2)
+# RolloutBuffer.compute_returns_and_advantages had a genuine off-by-one in
+# which `done` flag gated the GAE chain-break, unrelated to mjlab, present
+# on every PPO run in this library. Real-GPU-verified real 40M-step runs,
+# both with `lr_schedule="adaptive"` already on:
+#   fix #1+#2 alone: peaks far higher than the original bug (10.05 @ step
+#     11M vs. 3.18 @ step 10M) and holds it much longer, but still
+#     declines afterward -- traced to ppo/entropy climbing continuously
+#     and monotonically for the ENTIRE run (the opposite of the earlier
+#     entropy-COLLAPSE story, but the same "nothing bounds a monotonic
+#     drift" shape of problem), ending BELOW the original bug's own
+#     eventual plateau (0.77 vs. 1.10-1.23 @ step 40M).
+#   + entropy_coef_final/entropy_coef_anneal_steps (this config, below):
+#     a much longer-sustained elevated plateau (average ~4.2 across steps
+#     6M-28M) that then settles into a genuinely STABLE second plateau for
+#     the last 12M steps (1.45-1.85, not still declining at step 40M) --
+#     ends at 1.45, ~2x the fix-#1+#2-alone run's final value and above
+#     the original bug's own plateau.
+# Still not a clean "peaks and holds at its peak" outcome -- the run does
+# settle down from its mid-run plateau to a lower one -- but a real,
+# verified, substantial improvement over both the original bug and the
+# auto_reset/GAE fix alone. `save_best: true` remains necessary regardless.
 
 env_id: "Javis-Payload-Rough"
 env_type: "mjlab"
@@ -87,7 +117,12 @@ losses:
   - {name: entropy, weight: 0.005}
 
 train:
-  total_steps: 20_000_000
+  # 40M, not 20M -- this is the step budget the real verification runs
+  # referenced throughout this file's comments and README.md actually
+  # used. The decline (and the entropy-annealing fix's effect) mostly
+  # plays out in the back half of that budget; a 20M-step run would stop
+  # before the interesting part.
+  total_steps: 40_000_000
   n_envs: 4096
   n_steps: 24
   batch_size: 16384
@@ -109,6 +144,19 @@ train:
   lr_schedule: adaptive
   desired_kl: 0.01
   max_lr: 1e-3
+  # Entropy-coefficient annealing -- see this file's header comment for
+  # the full real-GPU before/after. Units are GRADIENT steps (one per
+  # minibatch -- the same counter lr_schedule="adaptive" above already
+  # uses internally), not env steps: n_epochs * (n_steps*n_envs/
+  # batch_size) = 5 * (24*4096/16384) = 30 gradient steps per iteration,
+  # total_steps/(_n_steps*n_envs) ~= 407 iterations for this config's
+  # 40M-step budget -> ~12,180 total gradient steps. 8000 (~65% of that)
+  # anneals entropy_coef from 0.005 down to 10% of that (0.0005), then
+  # holds the floor for the remaining ~35% of the run -- real exploration
+  # pressure early, much weaker constant upward pull on policy std late.
+  # Recompute proportionally if total_steps/n_epochs/batch_size change.
+  entropy_coef_final: 0.0005
+  entropy_coef_anneal_steps: 8000
   # Best-checkpoint tracking (SRL PR #38, merged) -- necessary as long as
   # this run peaks-then-declines rather than holding flat: saves
   # best_*.pt (highest eval/score_mean seen) alongside the periodic/final
