@@ -29,35 +29,75 @@
 # indefinitely; `save_best: true` below exists specifically because of that
 # -- always check the saved best_*.pt against final_*.pt before deploying.
 #
-# entropy_coef_final/entropy_coef_anneal_steps below need
-# https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one
-# merged (same silent-drop caveat as above -- re-upgrade after it lands).
-# That same branch also fixes two bugs upstream of this task's actual
-# instability, found investigating why the adaptive-KL-LR fix above still
-# didn't make PPO hold flat: (1) mjlab's own `auto_reset=True` default was
-# silently handing PPO's GAE bootstrap the WRONG next-state (a different,
-# freshly-reset episode's first frame) at every time-limit truncation; (2)
-# RolloutBuffer.compute_returns_and_advantages had a genuine off-by-one in
-# which `done` flag gated the GAE chain-break, unrelated to mjlab, present
-# on every PPO run in this library. Real-GPU-verified real 40M-step runs,
-# both with `lr_schedule="adaptive"` already on:
-#   fix #1+#2 alone: peaks far higher than the original bug (10.05 @ step
-#     11M vs. 3.18 @ step 10M) and holds it much longer, but still
-#     declines afterward -- traced to ppo/entropy climbing continuously
-#     and monotonically for the ENTIRE run (the opposite of the earlier
-#     entropy-COLLAPSE story, but the same "nothing bounds a monotonic
-#     drift" shape of problem), ending BELOW the original bug's own
-#     eventual plateau (0.77 vs. 1.10-1.23 @ step 40M).
-#   + entropy_coef_final/entropy_coef_anneal_steps (this config, below):
-#     a much longer-sustained elevated plateau (average ~4.2 across steps
-#     6M-28M) that then settles into a genuinely STABLE second plateau for
-#     the last 12M steps (1.45-1.85, not still declining at step 40M) --
-#     ends at 1.45, ~2x the fix-#1+#2-alone run's final value and above
-#     the original bug's own plateau.
-# Still not a clean "peaks and holds at its peak" outcome -- the run does
-# settle down from its mid-run plateau to a lower one -- but a real,
-# verified, substantial improvement over both the original bug and the
-# auto_reset/GAE fix alone. `save_best: true` remains necessary regardless.
+# train.target_entropy/actor.log_std_min below need
+# https://github.com/Bigkatoan/SRL/pull/new/feat/ppo-adaptive-target-entropy
+# merged (same silent-drop caveat as above -- re-upgrade after it lands; it
+# also carries https://github.com/Bigkatoan/SRL/pull/new/fix/mjlab-auto-reset-and-ppo-gae-off-by-one
+# and https://github.com/Bigkatoan/SRL/pull/new/fix/checkpoint-callback-interval-modulo,
+# both prerequisites for the real numbers below to reproduce).
+#
+# CORRECTION -- everything in this section used to describe `ppo/entropy`
+# "climbing continuously," framed as the opposite of an earlier entropy-
+# COLLAPSE hypothesis. That was a sign-reading bug, not a real finding:
+# `ppo/entropy` in every log/metrics.jsonl is `entropy_loss(ent) =
+# -ent.mean()` (SRL's srl/losses/rl_losses.py), logged via a straight,
+# unmodified passthrough -- the NEGATIVE of the true mean entropy, not the
+# entropy itself. Confirmed against this task's own actor (log_std_init=
+# 0.0, action_dim=2, theoretical initial entropy ~2.838): every real run's
+# first logged `ppo/entropy` value is ~-2.76, matching -2.838, not +2.838.
+# So the real phenomenon this whole file's history describes was entropy
+# COLLAPSE the entire time (true entropy declining from ~+2.8 toward the
+# log_std_min floor), never an explosion -- the "opposite of collapse"
+# framing was backwards. Real-GPU-verified 40-60M-step runs, all with
+# `lr_schedule="adaptive"` already on:
+#   auto_reset+GAE fix alone (SRL PR #40): peaks far higher than the
+#     original bug (10.05 @ step 11M vs. 3.18 @ step 10M) and holds it
+#     much longer, but still declines afterward, ending BELOW the
+#     original bug's own eventual plateau (0.77 vs. 1.10-1.23 @ step 40M).
+#   entropy_coef_final floor tuning (three real 60M-step runs: 0.0005,
+#     0.0, 0.0001): all eventually lost to collapse regardless of floor
+#     value, just at different rates -- a fixed/annealed entropy_coef is
+#     fundamentally one-directional (pushes entropy up, never pulls an
+#     overshoot back down), so no floor value self-corrects. 0.0 (true
+#     zero, removing the bonus entirely) was WORST, ending at 0.54 @ 60M,
+#     below every other config tried including the original bug's own
+#     plateau -- direct evidence the entropy bonus was doing real,
+#     load-bearing anti-collapse work, not just adding harmless noise.
+#     0.0001 (small nonzero) did better (0.72 @ 60M) but still collapsed.
+#   train.target_entropy (this config, below): PPO's entropy_coef becomes
+#     a learned, self-correcting parameter (SAC-alpha-style dual ascent)
+#     instead of a fixed/annealed dial -- see PPOConfig.target_entropy's
+#     docstring in SRL for the derivation. First real 60M-step run: peak
+#     27.79 @ step 16M (highest of ANY config tried on this task, beating
+#     even the 120M budget's 18.51), a genuinely strong plateau (13-21
+#     range) through steps 18-46M -- much longer-held than any fixed-
+#     coefficient attempt -- before declining to 4.19 @ 60M. That ending
+#     value is still well above every entropy_coef_final floor tried.
+#     `ppo/true_entropy` (the CORRECTLY-signed metric this PR adds --
+#     `ppo/entropy` remains present too, still negated, for continuity)
+#     confirmed NOT running away in the late-stage decline (44-60M):
+#     oscillated tightly around target_entropy=0.0 (-0.21 to +0.15) the
+#     whole time -- the mechanism held its target successfully, unlike
+#     every fixed-coefficient attempt. But `ppo/entropy_weight` (the
+#     learned coefficient) repeatedly hit its configured max_entropy_coef
+#     ceiling (was 0.02) doing so, suggesting something else pushes
+#     entropy down hard in that region and the mechanism was fighting
+#     near its limit -- not yet understood, and NOT the same failure mode
+#     as the fixed-coefficient runs' unbounded collapse. max_entropy_coef
+#     raised to 0.05 (below) for a second run testing whether more
+#     headroom changes the late-stage behavior -- update this comment
+#     with that result before trusting either value blindly.
+#   Deterministic tracking accuracy (scripts/eval_velocity_tracking.py,
+#     NOT the same metric as eval/score_mean above) stayed essentially
+#     FLAT across every one of these configs and every checkpoint tested
+#     (lin_vel error ~0.3-0.4 m/s, ang_vel error ~0.6-0.85 rad/s,
+#     including the target_entropy run's own 16M-peak and 60M-final
+#     checkpoints) -- the entropy-collapse fix changes SURVIVAL/BALANCE
+#     duration (episode_length_mean), not measured command-tracking
+#     precision, which appears to be a separate, still-unaddressed
+#     ceiling for this task/reward-shaping/architecture combination.
+# `save_best: true` remains necessary regardless -- none of these runs
+# hold flat at their peak indefinitely yet.
 
 env_id: "Javis-Payload-Rough"
 env_type: "mjlab"
@@ -102,6 +142,21 @@ actor:
   # working reference exactly rather than guess.
   log_std_init: 0.0
   state_dependent_std: false
+  # log_std_max=1.0 (default is 2.0, std=e^2~=7.4, absurd against a
+  # [-1, 1] action range) is a direct, mechanism-independent bound on
+  # worst-case action noise -- kept as a safety net even though, per this
+  # file's header comment's CORRECTION, real true entropy on this task
+  # has never actually been observed approaching this UPPER bound (that
+  # was a sign-reading error; the real, repeatedly-observed direction is
+  # entropy COLLAPSING toward the LOWER bound instead).
+  log_std_max: 1.0
+  # The bound that actually matters given the corrected picture above --
+  # default is -5.0 (std=e^-5~=0.0067, essentially deterministic).
+  # Tightened to -2.0 (std=e^-2~=0.135, still very narrow but not
+  # numerically degenerate) as a direct floor on worst-case collapse,
+  # independent of whether train.target_entropy below is successfully
+  # holding it away from there day to day.
+  log_std_min: -2.0
   layers:
     - {out_features: 128, activation: elu, norm: none}
 
@@ -144,19 +199,24 @@ train:
   lr_schedule: adaptive
   desired_kl: 0.01
   max_lr: 1e-3
-  # Entropy-coefficient annealing -- see this file's header comment for
-  # the full real-GPU before/after. Units are GRADIENT steps (one per
-  # minibatch -- the same counter lr_schedule="adaptive" above already
-  # uses internally), not env steps: n_epochs * (n_steps*n_envs/
-  # batch_size) = 5 * (24*4096/16384) = 30 gradient steps per iteration,
-  # total_steps/(_n_steps*n_envs) ~= 407 iterations for this config's
-  # 40M-step budget -> ~12,180 total gradient steps. 8000 (~65% of that)
-  # anneals entropy_coef from 0.005 down to 10% of that (0.0005), then
-  # holds the floor for the remaining ~35% of the run -- real exploration
-  # pressure early, much weaker constant upward pull on policy std late.
-  # Recompute proportionally if total_steps/n_epochs/batch_size change.
-  entropy_coef_final: 0.0005
-  entropy_coef_anneal_steps: 8000
+  # target_entropy supersedes entropy_coef_final/entropy_coef_anneal_steps
+  # entirely (mutually exclusive -- see PPOConfig.target_entropy's
+  # docstring in SRL). See this file's header comment for the full
+  # real-GPU history motivating this over a fixed/annealed floor.
+  # target_entropy=0.0 is this task's own data speaking: score stayed
+  # healthy while true entropy declined from its ~2.8 init through
+  # roughly 0, and degraded once it fell below there -- corresponds to
+  # std~=0.24/action-dim for this 2-action-dim Gaussian. Not yet verified
+  # as optimal on a real long run (first run used it as a starting guess
+  # and got the best PPO result on this task so far -- see header
+  # comment -- but a second run tuning max_entropy_coef is in progress).
+  target_entropy: 0.0
+  entropy_coef_lr: 0.001
+  min_entropy_coef: 0.0001
+  # 0.05 -- was 0.02 in the first real run, raised after that run showed
+  # the learned coefficient repeatedly hitting the 0.02 ceiling during
+  # the late-stage (44-60M) decline. See header comment.
+  max_entropy_coef: 0.05
   # Best-checkpoint tracking (SRL PR #38, merged) -- necessary as long as
   # this run peaks-then-declines rather than holding flat: saves
   # best_*.pt (highest eval/score_mean seen) alongside the periodic/final
